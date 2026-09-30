@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+history.json
+history.lock
+dashboard.html
+*.tmp
+.DS_Store

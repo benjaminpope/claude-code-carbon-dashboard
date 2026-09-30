@@ -1,0 +1,347 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="refresh" content="120">
+<title>Claude Code Carbon</title>
+<style>
+:root {
+  color-scheme: light;
+  --surface-0: #f4f3f0;
+  --surface-1: #fcfcfb;
+  --border: #e4e3de;
+  --grid: #ebeae6;
+  --text-primary: #0b0b0b;
+  --text-secondary: #52514e;
+  --text-muted: #7a7974;
+  --output: #2a78d6;
+  --cache_read: #eb6834;
+  --cache_write: #1baf7a;
+  --input: #eda100;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --surface-0: #111110;
+    --surface-1: #1a1a19;
+    --border: #2f2f2c;
+    --grid: #262624;
+    --text-primary: #ffffff;
+    --text-secondary: #c3c2b7;
+    --text-muted: #8f8e86;
+    --output: #3987e5;
+    --cache_read: #d95926;
+    --cache_write: #199e70;
+    --input: #c98500;
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --surface-0: #111110;
+  --surface-1: #1a1a19;
+  --border: #2f2f2c;
+  --grid: #262624;
+  --text-primary: #ffffff;
+  --text-secondary: #c3c2b7;
+  --text-muted: #8f8e86;
+  --output: #3987e5;
+  --cache_read: #d95926;
+  --cache_write: #199e70;
+  --input: #c98500;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0; background: var(--surface-0); color: var(--text-primary);
+  font: 14px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  font-variant-numeric: tabular-nums;
+}
+main { max-width: 1080px; margin: 0 auto; padding: 24px 16px 48px; }
+header { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 8px; margin-bottom: 16px; }
+h1 { font-size: 20px; margin: 0; font-weight: 600; }
+h2 { font-size: 14px; margin: 0 0 2px; font-weight: 600; }
+.sub { color: var(--text-secondary); font-size: 13px; margin: 0 0 12px; }
+.muted { color: var(--text-muted); font-size: 12px; }
+.card { background: var(--surface-1); border: 1px solid var(--border); border-radius: 10px; padding: 16px; margin-bottom: 16px; }
+.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; margin-bottom: 16px; }
+.tile .label { color: var(--text-secondary); font-size: 13px; }
+.tile .value { font-size: 30px; font-weight: 600; letter-spacing: -0.01em; margin: 2px 0 8px; }
+.tile .value small { font-size: 15px; font-weight: 500; color: var(--text-secondary); margin-left: 3px; }
+.tile .value.dual { font-size: clamp(20px, 2.2vw, 24px); white-space: nowrap; margin-top: 6px; }
+.tile .value.dual small { font-size: 13px; }
+.tile .value .slash { color: var(--text-muted); font-weight: 400; margin: 0 2px; }
+.breakdown { list-style: none; margin: 0; padding: 0; font-size: 12.5px; color: var(--text-secondary); }
+.breakdown li { display: flex; align-items: center; gap: 6px; }
+.breakdown li b { margin-left: auto; font-weight: 500; color: var(--text-primary); }
+.split { display: flex; gap: 2px; height: 8px; border-radius: 4px; overflow: hidden; }
+.split span { display: block; height: 100%; }
+.controls { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px 24px; }
+.controls label { display: block; font-size: 13px; color: var(--text-secondary); }
+.controls output { color: var(--text-primary); font-weight: 600; }
+.controls input[type=range] { width: 100%; accent-color: var(--output); }
+.legend { display: flex; flex-wrap: wrap; gap: 4px 16px; font-size: 13px; color: var(--text-secondary); margin: 0 0 8px; padding: 0; list-style: none; }
+.legend li { display: flex; align-items: center; gap: 6px; }
+.sw { width: 10px; height: 10px; border-radius: 2px; flex: none; }
+.row2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 16px; }
+.row2 .card { margin-bottom: 0; }
+svg { display: block; width: 100%; overflow: visible; }
+svg text { fill: var(--text-muted); font-size: 11px; }
+.hit { fill: transparent; cursor: default; }
+.hit:hover + g rect, g.bar:hover rect { opacity: 0.85; }
+#tip {
+  position: fixed; pointer-events: none; z-index: 10; display: none;
+  background: var(--surface-1); color: var(--text-primary); border: 1px solid var(--border);
+  border-radius: 8px; padding: 8px 10px; font-size: 12px; box-shadow: 0 4px 16px rgb(0 0 0 / 0.12); min-width: 180px;
+}
+#tip .t { font-weight: 600; margin-bottom: 4px; }
+#tip .r { display: flex; align-items: center; gap: 6px; justify-content: space-between; }
+#tip .r span:first-child { display: flex; align-items: center; gap: 6px; color: var(--text-secondary); }
+.proj { display: grid; grid-template-columns: minmax(80px, 140px) 1fr auto; gap: 8px 10px; align-items: center; font-size: 13px; }
+.proj .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-secondary); }
+.proj .bar { display: flex; gap: 2px; height: 14px; }
+.proj .bar span { display: block; height: 100%; }
+.proj .bar span:last-child { border-radius: 0 4px 4px 0; }
+.proj .v { text-align: right; min-width: 64px; }
+.share { display: grid; grid-template-columns: 64px 1fr; gap: 10px; align-items: center; margin: 8px 0; font-size: 13px; color: var(--text-secondary); }
+.share .bar { display: flex; gap: 2px; height: 22px; border-radius: 4px; overflow: hidden; }
+.share .bar span { display: flex; align-items: center; justify-content: center; color: #fff; font-size: 11px; font-weight: 600; min-width: 0; overflow: hidden; white-space: nowrap; }
+details summary { cursor: pointer; font-weight: 600; }
+table { border-collapse: collapse; width: 100%; font-size: 12.5px; margin-top: 10px; }
+th, td { padding: 5px 8px; text-align: right; border-bottom: 1px solid var(--border); white-space: nowrap; }
+th:first-child, td:first-child { text-align: left; }
+th { color: var(--text-secondary); font-weight: 500; }
+.tablewrap { overflow-x: auto; }
+footer { color: var(--text-muted); font-size: 12px; line-height: 1.55; }
+footer a { color: var(--text-secondary); }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Claude Code carbon footprint</h1>
+    <span class="muted" id="gen"></span>
+  </header>
+
+  <section class="tiles" id="tiles"></section>
+
+  <section class="card">
+    <h2>Cache assumptions</h2>
+    <p class="sub">TokenClimate publishes factors for input and output only. The cache factors below are assumptions relative to input; change them to see how much they matter.</p>
+    <div class="controls">
+      <label>Cache read = <output id="crOut"></output> × input
+        <input type="range" id="cr" min="0" max="6" step="1"></label>
+      <label>Cache write = <output id="cwOut"></output> × input
+        <input type="range" id="cw" min="0" max="4" step="1"></label>
+    </div>
+  </section>
+
+  <ul class="legend" id="legend"></ul>
+
+  <section class="card">
+    <h2>CO₂e per day</h2>
+    <p class="sub" id="dailySub"></p>
+    <div id="daily"></div>
+  </section>
+
+  <div class="row2">
+    <section class="card">
+      <h2>By project</h2>
+      <p class="sub">Ranked by CO₂e, all days.</p>
+      <div class="proj" id="projects"></div>
+    </section>
+    <section class="card">
+      <h2>Share of tokens vs share of carbon</h2>
+      <p class="sub" id="shareSub"></p>
+      <div id="share"></div>
+    </section>
+  </div>
+
+  <section class="card" style="margin-top:16px">
+    <details>
+      <summary>Table view</summary>
+      <div class="tablewrap"><table id="table"></table></div>
+    </details>
+  </section>
+
+  <footer>
+    Factors: TokenClimate tokenclimate-v3-2026-09 for Claude Opus (input 238 Wh and 90 g CO₂e per million tokens; output 5.1 kWh and 1.9 kg per million), medium confidence, applied to every model.
+    Data: Claude Code transcripts on this machine, deduplicated by API call and kept in a local history file, so days stay counted after their transcripts are cleaned up. Sessions on other machines are not included, nor anything that happened before the tool was first installed and whose transcripts had already been deleted.
+    <a href="https://tokenclimate.com/en/models/claude-opus">TokenClimate model sheet</a>.
+  </footer>
+</main>
+<div id="tip"></div>
+
+<script>
+const DATA = /*DATA*/null;
+const TYPES = ["output", "cache_read", "cache_write", "input"];
+const NAMES = { output: "Output", cache_read: "Cache read", cache_write: "Cache write", input: "Uncached input" };
+const CR_STEPS = [0, 0.01, 0.03, 0.1, 0.3, 0.5, 1];
+const CW_STEPS = [0.5, 0.75, 1, 1.25, 1.5];
+const col = t => `var(--${t})`;
+const $ = id => document.getElementById(id);
+const esc = s => String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+
+function store(k, v) { try { if (v === undefined) return localStorage.getItem(k); localStorage.setItem(k, v); } catch (e) { return null; } }
+
+function fmtG(g) {
+  if (g >= 1000) return [(g / 1000).toFixed(g >= 10000 ? 1 : 2), "kg"];
+  return [g.toFixed(g >= 10 ? 0 : 1), "g"];
+}
+const fmtGs = g => fmtG(g).join(" ");
+function fmtTok(n) {
+  if (n >= 1e9) return (n / 1e9).toFixed(2) + "B";
+  if (n >= 1e6) return (n / 1e6).toFixed(1) + "M";
+  if (n >= 1e3) return (n / 1e3).toFixed(1) + "k";
+  return String(n);
+}
+const fmtWh = wh => wh >= 1000 ? [(wh / 1000).toFixed(1), "kWh"] : [wh.toFixed(0), "Wh"];
+
+function factors(cr, cw) {
+  const f = DATA.factors, scale = { input: 1, output: 1, cache_read: cr, cache_write: cw };
+  const out = {};
+  for (const t of TYPES) out[t] = { g: f[t].g * scale[t] / 1e6, wh: f[t].wh * scale[t] / 1e6 };
+  return out;
+}
+
+function sum(rows, F) {
+  const s = { calls: 0, tok: {}, g: {}, wh: {}, G: 0, WH: 0, TOK: 0 };
+  for (const t of TYPES) { s.tok[t] = 0; s.g[t] = 0; s.wh[t] = 0; }
+  for (const r of rows) {
+    s.calls += r.calls;
+    for (const t of TYPES) { s.tok[t] += r[t]; s.g[t] += r[t] * F[t].g; s.wh[t] += r[t] * F[t].wh; }
+  }
+  for (const t of TYPES) { s.G += s.g[t]; s.WH += s.wh[t]; s.TOK += s.tok[t]; }
+  return s;
+}
+
+function groupBy(key) {
+  const m = new Map();
+  for (const r of DATA.rows) { if (!m.has(r[key])) m.set(r[key], []); m.get(r[key]).push(r); }
+  return m;
+}
+
+function splitBar(s) {
+  return `<div class="split" role="img" aria-label="Split by token type">` +
+    TYPES.filter(t => s.g[t] > 0).map(t => `<span style="flex:${s.g[t]};background:${col(t)}"></span>`).join("") + `</div>`;
+}
+
+const tip = $("tip");
+function showTip(e, html) {
+  tip.innerHTML = html; tip.style.display = "block";
+  const w = tip.offsetWidth, h = tip.offsetHeight;
+  let x = e.clientX + 14, y = e.clientY + 14;
+  if (x + w > innerWidth - 8) x = e.clientX - w - 14;
+  if (y + h > innerHeight - 8) y = e.clientY - h - 14;
+  tip.style.left = Math.max(8, x) + "px"; tip.style.top = Math.max(8, y) + "px";
+}
+const hideTip = () => { tip.style.display = "none"; };
+function tipBody(title, s) {
+  return `<div class="t">${esc(title)}</div>` + TYPES.map(t =>
+    `<div class="r"><span><i class="sw" style="background:${col(t)}"></i>${NAMES[t]}</span><span>${fmtGs(s.g[t])}</span></div>`).join("") +
+    `<div class="r" style="margin-top:4px;border-top:1px solid var(--border);padding-top:4px"><span>Total</span><span><b>${fmtGs(s.G)}</b></span></div>` +
+    `<div class="r"><span>API calls</span><span>${s.calls.toLocaleString()}</span></div>`;
+}
+function bindTips(root) {
+  root.querySelectorAll("[data-tip]").forEach(el => {
+    el.addEventListener("mousemove", e => showTip(e, el.dataset.tip));
+    el.addEventListener("mouseleave", hideTip);
+  });
+}
+
+function render() {
+  const cr = CR_STEPS[+$("cr").value], cw = CW_STEPS[+$("cw").value];
+  $("crOut").textContent = cr; $("cwOut").textContent = cw;
+  const F = factors(cr, cw);
+  const all = sum(DATA.rows, F);
+  const days = [...groupBy("day").entries()].sort((a, b) => a[0] < b[0] ? -1 : 1).map(([d, rs]) => [d, sum(rs, F)]);
+  const projects = [...groupBy("project").entries()].map(([p, rs]) => [p, sum(rs, F)]).sort((a, b) => b[1].G - a[1].G);
+
+  // Tiles
+  const today = new Date().toLocaleDateString("en-CA");
+  const todayS = (days.find(d => d[0] === today) || [null, sum([], F)])[1];
+  const prev = days.filter(d => d[0] < today).slice(-7);
+  const avg = prev.length ? prev.reduce((a, d) => a + d[1].G, 0) / prev.length : 0;
+  const inTok = all.tok.input + all.tok.cache_write + all.tok.cache_read;
+  const [gv, gu] = fmtG(all.G), [wv, wu] = fmtWh(all.WH), [tv, tu] = fmtG(todayS.G);
+  const vs = avg ? `${todayS.G >= avg ? "+" : "−"}${Math.abs(100 * (todayS.G / avg - 1)).toFixed(0)}% vs ${prev.length}-day average (${fmtGs(avg)})` : "No earlier days to compare";
+  $("tiles").innerHTML = `
+    <div class="card tile"><div class="label">Total CO₂e</div><div class="value">${gv}<small>${gu}</small></div>${splitBar(all)}</div>
+    <div class="card tile"><div class="label">Total energy</div><div class="value">${wv}<small>${wu}</small></div>${splitBar({ g: all.wh })}</div>
+    <div class="card tile"><div class="label">Today</div><div class="value">${tv}<small>${tu}</small></div><div class="muted">${vs}</div></div>
+    <div class="card tile"><div class="label">Tokens processed · ${all.calls.toLocaleString()} API calls</div>
+      <div class="value dual">${fmtTok(inTok)}<small>in</small> <span class="slash">/</span> ${fmtTok(all.tok.output)}<small>out</small></div>
+      <ul class="breakdown">${["cache_read", "cache_write", "input"].map(t =>
+        `<li><i class="sw" style="background:${col(t)}"></i><span>${NAMES[t]}</span><b>${fmtTok(all.tok[t])}</b></li>`).join("")}</ul></div>`;
+
+  $("legend").innerHTML = TYPES.map(t => `<li><i class="sw" style="background:${col(t)}"></i>${NAMES[t]}</li>`).join("");
+
+  // Daily stacked bars
+  const W = 1000, H = 240, padL = 48, padB = 26, padT = 8;
+  const maxG = Math.max(1, ...days.map(d => d[1].G));
+  const nice = (() => { const p = Math.pow(10, Math.floor(Math.log10(maxG))); for (const m of [1, 2, 2.5, 5, 10]) if (m * p >= maxG) return m * p; })();
+  const y = v => padT + (H - padT - padB) * (1 - v / nice);
+  const n = Math.max(days.length, 1), slot = (W - padL) / n, bw = Math.min(56, slot * 0.6);
+  let svg = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Stacked bar chart of CO2e per day by token type">`;
+  for (let i = 0; i <= 4; i++) {
+    const v = nice * i / 4, yy = y(v);
+    svg += `<line x1="${padL}" x2="${W}" y1="${yy}" y2="${yy}" stroke="var(--grid)" stroke-width="1"/>` +
+      `<text x="${padL - 6}" y="${yy + 4}" text-anchor="end">${fmtGs(v)}</text>`;
+  }
+  const labelEvery = Math.ceil(n / 12);
+  days.forEach(([d, s], i) => {
+    const x = padL + slot * i + (slot - bw) / 2;
+    let acc = 0, segs = [];
+    TYPES.forEach(t => { if (s.g[t] > 0) segs.push([t, s.g[t]]); });
+    let g = "";
+    segs.forEach(([t, v], k) => {
+      const y0 = y(acc), y1 = y(acc + v); acc += v;
+      const top = k === segs.length - 1, h = Math.max(0, y0 - y1 - (top ? 0 : 2));
+      g += top
+        ? `<path d="M${x},${y0} V${y1 + Math.min(4, h)} q0,-4 4,-4 h${bw - 8} q4,0 4,4 V${y0} Z" fill="${col(t)}"/>`
+        : `<rect x="${x}" y="${y0 - h}" width="${bw}" height="${h}" fill="${col(t)}"/>`;
+    });
+    svg += `<g class="bar">${g}</g>`;
+    svg += `<rect class="hit" x="${padL + slot * i}" y="${padT}" width="${slot}" height="${H - padT - padB}" data-tip="${esc(tipBody(d, s))}"/>`;
+    if (i % labelEvery === 0) svg += `<text x="${x + bw / 2}" y="${H - 8}" text-anchor="middle">${d.slice(5)}</text>`;
+  });
+  $("daily").innerHTML = svg + `</svg>`;
+  $("dailySub").textContent = `${days.length} day${days.length === 1 ? "" : "s"} with usage. Hover a bar for the breakdown.`;
+
+  // Projects
+  const maxP = Math.max(1, ...projects.map(p => p[1].G));
+  $("projects").innerHTML = projects.map(([p, s]) =>
+    `<div class="name" title="${esc(p)}">${esc(p)}</div>` +
+    `<div class="bar" data-tip="${esc(tipBody(p, s))}" style="width:${Math.max(0.5, 100 * s.G / maxP)}%">` +
+    TYPES.filter(t => s.g[t] > 0).map(t => `<span style="flex:${s.g[t]};background:${col(t)}"></span>`).join("") + `</div>` +
+    `<div class="v">${fmtGs(s.G)}</div>`).join("");
+
+  // Share of tokens vs carbon
+  const shareBar = (label, vals, total, unit) =>
+    `<div class="share"><div>${label}</div><div class="bar">` +
+    TYPES.filter(t => vals[t] > 0).map(t => {
+      const pct = 100 * vals[t] / total;
+      return `<span style="flex:${vals[t]};background:${col(t)}" data-tip="${esc(`<div class="t">${NAMES[t]}</div>${pct.toFixed(pct < 1 ? 2 : 0)}% of ${unit}`)}">${pct >= 8 ? pct.toFixed(0) + "%" : ""}</span>`;
+    }).join("") + `</div></div>`;
+  $("share").innerHTML = shareBar("Tokens", all.tok, all.TOK, "tokens") + shareBar("CO₂e", all.g, all.G, "CO₂e");
+  const oTok = 100 * all.tok.output / all.TOK, oG = 100 * all.g.output / all.G;
+  $("shareSub").textContent = `Output is ${oTok.toFixed(1)}% of tokens but ${oG.toFixed(0)}% of CO₂e; cache reads are ${(100 * all.tok.cache_read / all.TOK).toFixed(0)}% of tokens and ${(100 * all.g.cache_read / all.G).toFixed(0)}% of CO₂e.`;
+
+  // Table
+  $("table").innerHTML = `<thead><tr><th>Day</th>${TYPES.map(t => `<th>${NAMES[t]} tokens</th>`).join("")}<th>API calls</th><th>Wh</th><th>g CO₂e</th></tr></thead><tbody>` +
+    days.map(([d, s]) => `<tr><td>${d}</td>${TYPES.map(t => `<td>${s.tok[t].toLocaleString()}</td>`).join("")}<td>${s.calls.toLocaleString()}</td><td>${s.WH.toFixed(1)}</td><td>${s.G.toFixed(1)}</td></tr>`).join("") +
+    `<tr><td><b>Total</b></td>${TYPES.map(t => `<td><b>${all.tok[t].toLocaleString()}</b></td>`).join("")}<td><b>${all.calls.toLocaleString()}</b></td><td><b>${all.WH.toFixed(1)}</b></td><td><b>${all.G.toFixed(1)}</b></td></tr></tbody>`;
+
+  bindTips(document);
+  store("cr", $("cr").value); store("cw", $("cw").value);
+}
+
+$("gen").textContent = "Updated " + new Date(DATA.generated).toLocaleString();
+const idx = (steps, v) => Math.max(0, steps.indexOf(v));
+$("cr").value = store("cr") ?? idx(CR_STEPS, DATA.scales.cache_read);
+$("cw").value = store("cw") ?? idx(CW_STEPS, DATA.scales.cache_write);
+$("cr").addEventListener("input", render);
+$("cw").addEventListener("input", render);
+render();
+</script>
+</body>
+</html>
