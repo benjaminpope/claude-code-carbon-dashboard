@@ -21,7 +21,7 @@ carbon; cache reads are the reverse.
 Requires Python 3.9+ and macOS or Linux. No other dependencies.
 
 ```bash
-git clone <this repo> && cd claude-carbon
+git clone https://github.com/benjaminpope/claude-carbon.git && cd claude-carbon
 ./install.sh
 open ~/.claude/carbon/dashboard.html
 ```
