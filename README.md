@@ -1,4 +1,4 @@
-# claude-carbon
+# claude-code-carbon-dashboard
 
 Estimates the energy use and CO₂e of your Claude Code usage, split by token
 type, and shows it as a local dashboard that refreshes after every turn.
@@ -21,7 +21,8 @@ carbon; cache reads are the reverse.
 Requires Python 3.9+ and macOS or Linux. No other dependencies.
 
 ```bash
-git clone https://github.com/benjaminpope/claude-carbon.git && cd claude-carbon
+git clone https://github.com/benjaminpope/claude-code-carbon-dashboard.git
+cd claude-code-carbon-dashboard
 ./install.sh
 open ~/.claude/carbon/dashboard.html
 ```
@@ -120,6 +121,13 @@ calculator's own script on 2026-10-01 and live in `COMPARISONS` in
 Packaging items are for production in Germany. These are ALPLA's figures, and
 ALPLA is a plastic packaging manufacturer, so treat the packaging rows in
 particular as one company's numbers rather than an independent reference.
+
+## Related
+
+[TokenClimate](https://tokenclimate.com), whose factors this uses, also
+publishes an open-source Claude Code plugin called `claude-carbon` and a
+hosted dashboard for organisation-wide usage. This project is independent of
+both: a local, single-machine dashboard with a persistent history.
 
 ## Limitations
 

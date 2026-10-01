@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# Install claude-carbon: copy the tool into ~/.claude/carbon, add a Stop hook
-# to ~/.claude/settings.json that refreshes the dashboard after every turn, and
-# build the dashboard once. Safe to re-run; it updates the copy in place.
+# Install claude-code-carbon-dashboard: copy the tool into ~/.claude/carbon,
+# add a Stop hook to ~/.claude/settings.json that refreshes the dashboard after
+# every turn, and build the dashboard once. Safe to re-run; it updates the copy
+# in place.
 set -euo pipefail
 
 repo="$(cd "$(dirname "$0")" && pwd)"
