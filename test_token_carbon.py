@@ -94,13 +94,27 @@ class TokenCarbonTest(unittest.TestCase):
         self.assertAlmostEqual(g["output"], tc.OUTPUT_G)
 
     def test_comparison_exact_match_is_singular(self):
-        self.assertEqual(tc.format_comparison(4.0), "1 hamburger with fries")
-        self.assertEqual(tc.format_comparison(232.0), "1 economy flight Zurich–London")
+        self.assertEqual(tc.format_comparison(4.0), "1 burger with chips")
+        self.assertEqual(tc.format_comparison(232.0), "1 economy flight Zurich\u2013London")
 
     def test_comparison_picks_nearest_on_log_scale(self):
-        # 3.1 kg is 0.78 hamburgers but 6.4 spaghetti portions: hamburger is nearer.
-        self.assertEqual(tc.format_comparison(3.1), "0.8 hamburgers with fries")
+        # 3.1 kg is 0.78 burgers but 6.4 spaghetti portions: the burger is nearer.
+        self.assertEqual(tc.format_comparison(3.1), "0.78 burgers with chips")
         self.assertEqual(tc.format_comparison(9000), "1.2 years of an average European's emissions")
+
+    def test_comparison_rotates_through_neighbours_by_day(self):
+        days = ["2026-09-28", "2026-09-29", "2026-09-30", "2026-10-01"]
+        picks = [tc.format_comparison(3.1, d) for d in days]
+        self.assertEqual(picks[:3], ["0.78 burgers with chips",
+                                     "6.4 portions of spaghetti with tomato sauce",
+                                     "0.13 trees' annual CO\u2082 uptake"])
+        self.assertEqual(picks[3], picks[0])
+        self.assertEqual(tc.format_comparison(3.1, days[1]), picks[1])
+
+    def test_comparison_at_the_ends_of_the_table(self):
+        # The smallest item has no neighbour below, so only two items take turns.
+        picks = {tc.format_comparison(0.0002, d) for d in ("2026-10-01", "2026-10-02", "2026-10-03")}
+        self.assertEqual(picks, {"1 Google search", "0.046 messages sent to ChatGPT"})
 
     def test_comparisons_are_sorted_and_positive(self):
         kgs = [c["kg"] for c in tc.COMPARISONS]

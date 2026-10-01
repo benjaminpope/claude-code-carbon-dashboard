@@ -75,9 +75,13 @@ model, which overstates Sonnet and Haiku usage.
 ## Everyday equivalents
 
 To make the numbers tangible, each day's total (and the overall and today's
-totals) is matched to the nearest item, on a log scale, in the
+totals) is compared with an item in the
 [ALPLA CO₂ Comparison Tool](https://www.alpla.com/en/sustainability/co2-comparison-tool),
-e.g. 3.1 kg ≈ 0.8 hamburgers with fries. The factors were read from the
+e.g. 3.1 kg ≈ 0.78 burgers with chips. For variety, the nearest item on a log
+scale and its two neighbours in the table below take turns from day to day
+(nearest, one below, one above): a given day always shows the same item, and
+consecutive days differ. On the dashboard, the overall and today's totals use
+today's date, so they rotate too. The factors were read from the
 calculator's own script on 2026-10-01 and live in `COMPARISONS` in
 `token_carbon.py`:
 
@@ -96,7 +100,7 @@ calculator's own script on 2026-10-01 and live in `COMPARISONS` in
 | Detergent bottle | 0.165 |
 | Coffee cup | 0.4 |
 | Portion of spaghetti with tomato sauce | 0.488 |
-| Hamburger with fries | 4 |
+| Burger with chips | 4 |
 | A tree's annual CO₂ uptake | 24.62 |
 | Manufactured smartphone | 80 |
 | Economy flight Zurich–London | 232 |

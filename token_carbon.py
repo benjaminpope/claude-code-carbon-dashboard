@@ -36,7 +36,7 @@ import os
 import re
 import sys
 from collections import defaultdict
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 
 DATA_DIR = Path(os.environ.get("CLAUDE_CARBON_HOME", Path.home() / ".claude" / "carbon"))
@@ -82,7 +82,7 @@ COMPARISONS = [
     {"kg": 0.4, "one": "coffee cup", "many": "coffee cups"},
     {"kg": 0.488, "one": "portion of spaghetti with tomato sauce",
      "many": "portions of spaghetti with tomato sauce"},
-    {"kg": 4.0, "one": "hamburger with fries", "many": "hamburgers with fries"},
+    {"kg": 4.0, "one": "burger with chips", "many": "burgers with chips"},
     {"kg": 24.62, "one": "tree's annual CO\u2082 uptake", "many": "trees' annual CO\u2082 uptake"},
     {"kg": 80.0, "one": "manufactured smartphone", "many": "manufactured smartphones"},
     {"kg": 232.0, "one": "economy flight Zurich\u2013London",
@@ -96,20 +96,39 @@ COMPARISONS = [
 ]
 
 
-def closest_comparison(kg):
-    """The everyday equivalent nearest to kg on a log scale, as (count, label)."""
+def pick_comparison(kg, day=None):
+    """An everyday equivalent for kg, as (count, item).
+
+    Without a day, the item nearest kg on a log scale. With a day (an ISO
+    date), the nearest item and its two neighbours in the ranking take turns
+    from one day to the next (nearest, one below, one above), so a given day
+    always gets the same item and consecutive days differ. The dashboard
+    uses the same rule.
+    """
+    i = min(range(len(COMPARISONS)),
+            key=lambda j: abs(math.log(kg / COMPARISONS[j]["kg"])))
+    if day is not None:
+        choices = [j for j in (i, i - 1, i + 1) if 0 <= j < len(COMPARISONS)]
+        epoch_day = date.fromisoformat(day).toordinal() - date(1970, 1, 1).toordinal()
+        i = choices[epoch_day % len(choices)]
+    return kg / COMPARISONS[i]["kg"], COMPARISONS[i]
+
+
+def format_count(n):
+    """Two significant figures below 1, one decimal below 10, else whole."""
+    if n < 1:
+        return f"{n:.2g}"
+    if n < 10:
+        return f"{n:.1f}".removesuffix(".0")
+    return f"{round(n):,}"
+
+
+def format_comparison(kg, day=None):
     if kg <= 0:
-        return 0, COMPARISONS[0]["many"]
-    best = min(COMPARISONS, key=lambda c: abs(math.log(kg / c["kg"])))
-    count = kg / best["kg"]
-    shown = round(count, 1) if count < 10 else round(count)
-    return count, best["one"] if shown == 1 else best["many"]
-
-
-def format_comparison(kg):
-    count, label = closest_comparison(kg)
-    number = f"{count:.1f}".removesuffix(".0") if count < 10 else f"{round(count):,}"
-    return f"{number} {label}"
+        return "nothing yet"
+    count, item = pick_comparison(kg, day)
+    number = format_count(count)
+    return f"{number} {item['one'] if number == '1' else item['many']}"
 
 
 def project_name(project, cwds):
@@ -251,7 +270,8 @@ def write_html(records, out_path):
     tmp.replace(out_path)
 
 
-def print_table(result):
+def print_table(result, by=None):
+    today = datetime.now().astimezone().date().isoformat()
     for name, row in result.items():
         print(f"\n== {name}  ({row['calls']:,} API calls)")
         print(f"{'type':<12}{'tokens':>16}{'Wh':>12}{'g CO2e':>12}{'share':>8}")
@@ -261,7 +281,8 @@ def print_table(result):
                   f"{row['g_co2e'][t]:>12.1f}{row['g_co2e'][t] / total:>8.0%}")
         print(f"{'total':<12}{sum(row['tokens'].values()):>16,}"
               f"{row['wh']['total']:>12.1f}{row['g_co2e']['total']:>12.1f}")
-        print(f"\u2248 {format_comparison(row['g_co2e']['total'] / 1000)}")
+        key = name if by == "day" else today
+        print(f"\u2248 {format_comparison(row['g_co2e']['total'] / 1000, key)}")
     print(f"\nCache scales vs input: write x{CACHE_WRITE_SCALE}, read x{CACHE_READ_SCALE} "
           "(assumptions). Opus factors applied to every model.", file=sys.stderr)
 
@@ -282,7 +303,7 @@ def main():
                   sys.stdout, indent=2)
         print()
     else:
-        print_table(tally(records, args.by))
+        print_table(tally(records, args.by), args.by)
 
 
 if __name__ == "__main__":
