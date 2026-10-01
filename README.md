@@ -53,24 +53,33 @@ loads. Re-run `./install.sh` after pulling changes.
 
 ## Emission factors
 
-From [TokenClimate](https://tokenclimate.com/en/models/claude-opus)
-(`tokenclimate-v3-2026-09`, Claude Opus, medium confidence):
+Each API call is costed with the factors for its own model family, following
+the [TokenClimate methodology](https://tokenclimate.com/en/methodology)
+(`tokenclimate-v3-2026-09`). Server energy per million tokens:
 
-| | Energy | CO₂e |
-|---|---|---|
-| per million input tokens | 238 Wh | 90 g |
-| per million output tokens | 5.1 kWh | 1.9 kg |
+| Family | Input | Output | Confidence |
+|---|---:|---:|---|
+| Claude Haiku | 61 Wh | 1,262 Wh | medium (0.5 × Sonnet) |
+| Claude Sonnet | 119 Wh | 2,525 Wh | high (fitted to a published estimate) |
+| Claude Opus | 238 Wh | 5,050 Wh | medium (2 × Sonnet) |
+| Claude Fable | 476 Wh | 10,100 Wh | low (2 × Opus, price proxy) |
 
-TokenClimate publishes no factors for cache traffic. The tool assumes:
+- Cache write = input energy; cache read = 0.08 × input energy
+  (TokenClimate's "cache energy" factor, plausible range 0.05–0.20).
+- CO₂e = energy × 0.37618 g/Wh: datacentre overhead (PUE 1.14) × grid
+  intensity (0.287 kg/kWh), plus 49 g/kWh of amortised hardware carbon.
+- The family is read from the model name (`claude-sonnet-5-5` → Sonnet).
+  Models that match no family are counted as Opus, and the command line lists
+  them.
 
-- cache write = 1.0 × input (the same prefill compute, plus a cache store);
-- cache read = 0.1 × input (mirrors the price ratio; a proxy, not a measurement).
+These reproduce TokenClimate's model sheets (e.g. Opus: 90 g per million input
+tokens, 1.9 kg per million output) and the worked example in its methodology;
+the tests check both.
 
-**The cache-read assumption dominates the total.** At 0.1× cache reads are
-about half the CO₂e; at 1.0× they are over 90%. The dashboard has sliders to
-explore this, and the defaults live at the top of `token_carbon.py`
-(`CACHE_READ_SCALE`, `CACHE_WRITE_SCALE`). Opus factors are applied to every
-model, which overstates Sonnet and Haiku usage.
+**The cache-read factor matters most.** Cache reads are about 98% of tokens,
+so at 0.08 they are about half the CO₂e, and at 1.0 they would be over 90%.
+The dashboard has sliders to explore this; the defaults live at the top of
+`token_carbon.py` (`CACHE_READ_SCALE`, `CACHE_WRITE_SCALE`).
 
 ## Everyday equivalents
 

@@ -12,18 +12,18 @@ model; a record whose transcript has been deleted keeps its last value. All
 reports read from that history, so they keep covering days whose transcripts
 are gone. The history holds token counts only, never conversation text.
 
-Emission factors come from TokenClimate (tokenclimate-v3-2026-09, Claude
-Opus): 238 Wh and 90 g CO2e per million input tokens, 5.1 kWh and 1.9 kg
-CO2e per million generated tokens. TokenClimate gives no factors for cache
-traffic, so cache writes and cache reads are scaled from the input factor by
-CACHE_WRITE_SCALE and CACHE_READ_SCALE below. Those two numbers are
-assumptions, not measurements; change them if you have better data.
+Energy and emission factors follow the TokenClimate methodology
+(tokenclimate-v3-2026-09, https://tokenclimate.com/en/methodology): per-family
+server energy for input and output tokens (Haiku, Sonnet, Opus, Fable), cache
+writes at the input rate, cache reads at 0.08 times it, and CO2e = energy x
+(PUE x grid intensity + embodied hardware carbon). Models that match no family
+are counted as Opus and reported as such.
 
 Usage:
     token_carbon.py                        # all history, all projects
     token_carbon.py --since 2026-09-01     # only days on or after this date
     token_carbon.py --project myproject    # substring match on project name
-    token_carbon.py --by project           # also: session, model, day
+    token_carbon.py --by project           # also: session, model, family, day
     token_carbon.py --json                 # machine-readable output
     token_carbon.py --html dashboard.html  # self-contained dashboard page
 """
@@ -44,24 +44,53 @@ PROJECTS = Path(os.environ.get("CLAUDE_PROJECTS_DIR", Path.home() / ".claude" / 
 TEMPLATE = Path(__file__).resolve().parent / "dashboard_template.html"
 HISTORY_VERSION = 1
 
-# Per million tokens, TokenClimate tokenclimate-v3-2026-09 (Claude Opus).
-INPUT_WH, INPUT_G = 238.0, 90.0
-OUTPUT_WH, OUTPUT_G = 5100.0, 1900.0
+# Server (IT) energy in Wh per million tokens, TokenClimate tokenclimate-v3-2026-09
+# methodology, "Anthropic parameters". Only Sonnet is fitted to a published
+# estimate; Opus is 2x Sonnet, Haiku 0.5x and Fable 2x Opus, hence the
+# confidence levels.
+FAMILIES = {
+    "haiku": {"label": "Claude Haiku", "in_wh": 61, "out_wh": 1262, "confidence": "medium"},
+    "sonnet": {"label": "Claude Sonnet", "in_wh": 119, "out_wh": 2525, "confidence": "high"},
+    "opus": {"label": "Claude Opus", "in_wh": 238, "out_wh": 5050, "confidence": "medium"},
+    "fable": {"label": "Claude Fable", "in_wh": 476, "out_wh": 10100, "confidence": "low"},
+}
+FALLBACK_FAMILY = "opus"
 
-# Assumptions relative to uncached input. A cache write does the same prefill
-# compute as input plus a KV-cache store; a cache read skips the compute and
-# mostly moves memory. 0.1 mirrors the price ratio and is only a proxy.
+# CO2e per Wh of server energy: datacentre overhead (PUE) times grid carbon
+# intensity, plus amortised hardware (embodied) carbon. AWS parameters from
+# TokenClimate: PUE 1.14, 0.287 kg/kWh, 49 g/kWh.
+PUE, GRID_G_PER_WH, EMBODIED_G_PER_WH = 1.14, 0.287, 0.049
+CO2_G_PER_WH = PUE * GRID_G_PER_WH + EMBODIED_G_PER_WH  # 0.37618
+
+# Relative to uncached input. A cache write runs the same prefill as input; a
+# cache read reuses stored keys and values and costs 0.08x (TokenClimate,
+# "Cache energy"; plausible range 0.05 to 0.20).
 CACHE_WRITE_SCALE = 1.0
-CACHE_READ_SCALE = 0.1
+CACHE_READ_SCALE = 0.08
 
 TYPES = ("input", "cache_write", "cache_read", "output")
 COUNTS = TYPES + ("calls",)
-FACTORS = {  # (Wh, g CO2e) per million tokens
-    "input": (INPUT_WH, INPUT_G),
-    "cache_write": (INPUT_WH * CACHE_WRITE_SCALE, INPUT_G * CACHE_WRITE_SCALE),
-    "cache_read": (INPUT_WH * CACHE_READ_SCALE, INPUT_G * CACHE_READ_SCALE),
-    "output": (OUTPUT_WH, OUTPUT_G),
-}
+
+
+def model_family(model):
+    """'claude-sonnet-5-5' -> 'sonnet'. Unrecognised models count as Opus."""
+    m = model.lower()
+    for family in FAMILIES:
+        if family in m:
+            return family
+    return "fable" if "mythos" in m else FALLBACK_FAMILY
+
+
+def wh_per_mtok(family, token_type):
+    f = FAMILIES[family]
+    return {"input": f["in_wh"], "cache_write": f["in_wh"] * CACHE_WRITE_SCALE,
+            "cache_read": f["in_wh"] * CACHE_READ_SCALE, "output": f["out_wh"]}[token_type]
+
+
+def is_known_family(model):
+    m = model.lower()
+    return any(f in m for f in FAMILIES) or "mythos" in m
+
 
 # Everyday equivalents, kg CO2e per unit, from the ALPLA CO2 Comparison Tool
 # (https://www.alpla.com/en/sustainability/co2-comparison-tool, read 2026-10-01;
@@ -155,7 +184,9 @@ def scan_transcripts(projects=PROJECTS):
                     continue
                 msg = rec.get("message") or {}
                 usage = msg.get("usage")
-                if not usage:
+                # Claude Code writes "<synthetic>" placeholder messages locally;
+                # they are not API calls.
+                if not usage or str(msg.get("model", "")).startswith("<"):
                     continue
                 if rec.get("cwd"):
                     cwds[project].add(rec["cwd"])
@@ -223,44 +254,51 @@ def update_history(data_dir=DATA_DIR, projects=PROJECTS):
 
 def select(records, project=None, since=None):
     return [r for r in records
-            if (not project or project in r["project"] or project in r["project_dir"])
+            if not r["model"].startswith("<")
+            and (not project or project in r["project"] or project in r["project_dir"])
             and (not since or r["day"] >= since)]
 
 
 def tally(records, by=None):
-    groups = defaultdict(lambda: {c: 0 for c in COUNTS})
+    zero = lambda: {t: 0.0 for t in TYPES}
+    groups = defaultdict(lambda: {"calls": 0, "tokens": zero(), "wh": zero(), "g_co2e": zero()})
     for r in records:
-        g = groups[r[by] if by else "total"]
-        for c in COUNTS:
-            g[c] += r[c]
-    out = {}
-    for name, g in groups.items():
-        row = {"calls": g["calls"], "tokens": {}, "wh": {}, "g_co2e": {}}
+        family = model_family(r["model"])
+        g = groups[FAMILIES[family]["label"] if by == "family" else r[by] if by else "total"]
+        g["calls"] += r["calls"]
         for t in TYPES:
-            wh, gco2 = FACTORS[t]
-            row["tokens"][t] = g[t]
-            row["wh"][t] = g[t] / 1e6 * wh
-            row["g_co2e"][t] = g[t] / 1e6 * gco2
-        row["wh"]["total"] = sum(row["wh"][t] for t in TYPES)
-        row["g_co2e"]["total"] = sum(row["g_co2e"][t] for t in TYPES)
-        out[name] = row
-    return dict(sorted(out.items(), key=lambda kv: -kv[1]["g_co2e"]["total"]))
+            wh = r[t] / 1e6 * wh_per_mtok(family, t)
+            g["tokens"][t] += r[t]
+            g["wh"][t] += wh
+            g["g_co2e"][t] += wh * CO2_G_PER_WH
+    for g in groups.values():
+        g["tokens"] = {t: int(v) for t, v in g["tokens"].items()}
+        g["wh"]["total"] = sum(g["wh"][t] for t in TYPES)
+        g["g_co2e"]["total"] = sum(g["g_co2e"][t] for t in TYPES)
+    return dict(sorted(groups.items(), key=lambda kv: -kv[1]["g_co2e"]["total"]))
+
+
+def factor_table():
+    """Wh and g CO2e per million tokens, by family and token type."""
+    return {f: {t: {"wh": wh_per_mtok(f, t), "g_co2e": wh_per_mtok(f, t) * CO2_G_PER_WH}
+                for t in TYPES} for f in FAMILIES}
 
 
 def write_html(records, out_path):
-    """Render the dashboard: day x project rows, factors applied in-page."""
+    """Render the dashboard: day x project x family rows, factors applied in-page."""
     rows = defaultdict(lambda: {c: 0 for c in COUNTS})
     for r in records:
-        row = rows[(r["day"], r["project"])]
+        row = rows[(r["day"], r["project"], model_family(r["model"]))]
         for c in COUNTS:
             row[c] += r[c]
     data = {
         "generated": datetime.now().astimezone().isoformat(timespec="minutes"),
-        "factors": {t: {"wh": INPUT_WH if t != "output" else OUTPUT_WH,
-                        "g": INPUT_G if t != "output" else OUTPUT_G} for t in TYPES},
+        "families": FAMILIES,
+        "co2_g_per_wh": CO2_G_PER_WH,
         "scales": {"cache_write": CACHE_WRITE_SCALE, "cache_read": CACHE_READ_SCALE},
         "comparisons": COMPARISONS,
-        "rows": [{"day": d, "project": p, **r} for (d, p), r in sorted(rows.items())],
+        "rows": [{"day": d, "project": p, "family": f, **r}
+                 for (d, p, f), r in sorted(rows.items())],
     }
     html = TEMPLATE.read_text().replace(
         "/*DATA*/null", json.dumps(data).replace("</", "<\\/"))
@@ -270,7 +308,7 @@ def write_html(records, out_path):
     tmp.replace(out_path)
 
 
-def print_table(result, by=None):
+def print_table(result, by=None, unknown=()):
     today = datetime.now().astimezone().date().isoformat()
     for name, row in result.items():
         print(f"\n== {name}  ({row['calls']:,} API calls)")
@@ -283,15 +321,18 @@ def print_table(result, by=None):
               f"{row['wh']['total']:>12.1f}{row['g_co2e']['total']:>12.1f}")
         key = name if by == "day" else today
         print(f"\u2248 {format_comparison(row['g_co2e']['total'] / 1000, key)}")
-    print(f"\nCache scales vs input: write x{CACHE_WRITE_SCALE}, read x{CACHE_READ_SCALE} "
-          "(assumptions). Opus factors applied to every model.", file=sys.stderr)
+    print(f"\nTokenClimate factors per model family; cache write x{CACHE_WRITE_SCALE}, "
+          f"cache read x{CACHE_READ_SCALE} of input.", file=sys.stderr)
+    if unknown:
+        print(f"Counted as {FAMILIES[FALLBACK_FAMILY]['label']}: {', '.join(sorted(unknown))}",
+              file=sys.stderr)
 
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--since", help="ISO date, e.g. 2026-09-01")
     ap.add_argument("--project", help="substring of the project name")
-    ap.add_argument("--by", choices=["project", "session", "model", "day"])
+    ap.add_argument("--by", choices=["project", "session", "model", "family", "day"])
     ap.add_argument("--json", action="store_true")
     ap.add_argument("--html", metavar="PATH", help="write the dashboard to PATH")
     args = ap.parse_args()
@@ -299,11 +340,12 @@ def main():
     if args.html:
         write_html(records, args.html)
     elif args.json:
-        json.dump({"factors_per_million": FACTORS, "groups": tally(records, args.by)},
+        json.dump({"factors_per_million": factor_table(), "groups": tally(records, args.by)},
                   sys.stdout, indent=2)
         print()
     else:
-        print_table(tally(records, args.by), args.by)
+        unknown = {r["model"] for r in records if not is_known_family(r["model"])}
+        print_table(tally(records, args.by), args.by, unknown)
 
 
 if __name__ == "__main__":

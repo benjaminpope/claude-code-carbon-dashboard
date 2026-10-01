@@ -86,12 +86,44 @@ class TokenCarbonTest(unittest.TestCase):
         self.assertEqual(len(records), 3)
         self.assertEqual(len(tc.select(records, since="2026-09-30")), 2)
 
-    def test_emissions_use_factors(self):
+    def test_emissions_match_tokenclimate_sheets(self):
+        # Opus sheet: 90 g per million input tokens, 1.9 kg per million output.
         self.write("s1.jsonl", [call("m1", "s1", "/Users/me/code/demo",
                                      inp=1_000_000, cw=0, cr=0, out=1_000_000)])
         g = self.run_update()["g_co2e"]
-        self.assertAlmostEqual(g["input"], tc.INPUT_G)
-        self.assertAlmostEqual(g["output"], tc.OUTPUT_G)
+        self.assertAlmostEqual(g["input"], 89.5, places=1)
+        self.assertAlmostEqual(g["output"], 1899.7, places=1)
+
+    def test_tokenclimate_worked_example(self):
+        # The Sonnet session in TokenClimate's methodology: 134.06 Wh, 50.43 g.
+        self.write("s1.jsonl", [call("m1", "s1", "/Users/me/code/demo", model="claude-sonnet-5-5",
+                                     inp=50_000, cw=200_000, cr=3_000_000, out=30_000)])
+        total = self.run_update()
+        self.assertAlmostEqual(total["wh"]["total"], 134.06, places=2)
+        self.assertAlmostEqual(total["g_co2e"]["total"], 50.43, places=2)
+
+    def test_model_families(self):
+        self.assertEqual(tc.model_family("claude-opus-5-5"), "opus")
+        self.assertEqual(tc.model_family("claude-sonnet-5-5"), "sonnet")
+        self.assertEqual(tc.model_family("claude-haiku-4-5-20251001"), "haiku")
+        self.assertEqual(tc.model_family("claude-fable-5-1"), "fable")
+        self.assertEqual(tc.model_family("some-gateway-model"), "opus")
+        self.assertFalse(tc.is_known_family("some-gateway-model"))
+
+    def test_each_call_uses_its_own_model_factors(self):
+        self.write("s1.jsonl", [
+            call("m1", "s1", "/Users/me/code/demo", model="claude-opus-5-5"),
+            call("m2", "s1", "/Users/me/code/demo", model="claude-haiku-4-5")])
+        by = tc.tally(tc.update_history(self.data, self.projects), "family")
+        self.assertEqual(set(by), {"Claude Opus", "Claude Haiku"})
+        ratio = by["Claude Haiku"]["g_co2e"]["output"] / by["Claude Opus"]["g_co2e"]["output"]
+        self.assertAlmostEqual(ratio, 1262 / 5050)
+
+    def test_synthetic_messages_are_not_calls(self):
+        self.write("s1.jsonl", [call("m1", "s1", "/Users/me/code/demo"),
+                                call("m2", "s1", "/Users/me/code/demo", model="<synthetic>",
+                                     inp=0, cw=0, cr=0, out=0)])
+        self.assertEqual(self.run_update()["calls"], 1)
 
     def test_comparison_exact_match_is_singular(self):
         self.assertEqual(tc.format_comparison(4.0), "1 burger with chips")

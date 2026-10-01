@@ -133,10 +133,10 @@ footer a { color: var(--text-secondary); }
 
   <section class="card">
     <h2>Cache assumptions</h2>
-    <p class="sub">TokenClimate publishes factors for input and output only. The cache factors below are assumptions relative to input; change them to see how much they matter.</p>
+    <p class="sub">Relative to uncached input. TokenClimate's methodology uses 0.08 for cache reads (plausible range 0.05–0.20) and 1 for cache writes. Cache reads are most of the tokens, so this choice moves the total a lot.</p>
     <div class="controls">
       <label>Cache read = <output id="crOut"></output> × input
-        <input type="range" id="cr" min="0" max="6" step="1"></label>
+        <input type="range" id="cr" min="0" max="7" step="1"></label>
       <label>Cache write = <output id="cwOut"></output> × input
         <input type="range" id="cw" min="0" max="4" step="1"></label>
     </div>
@@ -156,6 +156,9 @@ footer a { color: var(--text-secondary); }
       <h2>By project</h2>
       <p class="sub">Ranked by CO₂e, all days.</p>
       <div class="proj" id="projects"></div>
+      <h2 style="margin-top:20px">By model</h2>
+      <p class="sub" id="modelsSub"></p>
+      <div class="proj" id="models"></div>
     </section>
     <section class="card">
       <h2>Share of tokens vs share of carbon</h2>
@@ -172,9 +175,8 @@ footer a { color: var(--text-secondary); }
   </section>
 
   <footer>
-    Factors: TokenClimate tokenclimate-v3-2026-09 for Claude Opus (input 238 Wh and 90 g CO₂e per million tokens; output 5.1 kWh and 1.9 kg per million), medium confidence, applied to every model.
+    Factors: <a href="https://tokenclimate.com/en/methodology">TokenClimate methodology</a> tokenclimate-v3-2026-09, per model family (server energy per million input / output tokens: Haiku 61 / 1,262 Wh, Sonnet 119 / 2,525, Opus 238 / 5,050, Fable 476 / 10,100), times 0.376 g CO₂e per Wh for datacentre overhead, grid electricity and amortised hardware. Only Sonnet is fitted to a published estimate; the others are scaled from it. Unrecognised models are counted as Opus.
     Data: Claude Code transcripts on this machine, deduplicated by API call and kept in a local history file, so days stay counted after their transcripts are cleaned up. Sessions on other machines are not included, nor anything that happened before the tool was first installed and whose transcripts had already been deleted.
-    <a href="https://tokenclimate.com/en/models/claude-opus">TokenClimate model sheet</a>.
     Everyday equivalents: the nearest item on a log scale from the <a href="https://www.alpla.com/en/sustainability/co2-comparison-tool">ALPLA CO₂ Comparison Tool</a> (ALPLA's own figures; ALPLA is a plastic packaging maker).
   </footer>
 </main>
@@ -184,7 +186,7 @@ footer a { color: var(--text-secondary); }
 const DATA = /*DATA*/null;
 const TYPES = ["output", "cache_read", "cache_write", "input"];
 const NAMES = { output: "Output", cache_read: "Cache read", cache_write: "Cache write", input: "Uncached input" };
-const CR_STEPS = [0, 0.01, 0.03, 0.1, 0.3, 0.5, 1];
+const CR_STEPS = [0, 0.02, 0.05, 0.08, 0.1, 0.2, 0.5, 1];
 const CW_STEPS = [0.5, 0.75, 1, 1.25, 1.5];
 const col = t => `var(--${t})`;
 const $ = id => document.getElementById(id);
@@ -223,10 +225,14 @@ function compare(g, day) {
 }
 const fmtWh = wh => wh >= 1000 ? [(wh / 1000).toFixed(1), "kWh"] : [wh.toFixed(0), "Wh"];
 
+// Per-token Wh and g CO2e by model family and token type.
 function factors(cr, cw) {
-  const f = DATA.factors, scale = { input: 1, output: 1, cache_read: cr, cache_write: cw };
   const out = {};
-  for (const t of TYPES) out[t] = { g: f[t].g * scale[t] / 1e6, wh: f[t].wh * scale[t] / 1e6 };
+  for (const [fam, f] of Object.entries(DATA.families)) {
+    const wh = { input: f.in_wh, cache_write: f.in_wh * cw, cache_read: f.in_wh * cr, output: f.out_wh };
+    out[fam] = {};
+    for (const t of TYPES) out[fam][t] = { wh: wh[t] / 1e6, g: wh[t] * DATA.co2_g_per_wh / 1e6 };
+  }
   return out;
 }
 
@@ -235,7 +241,8 @@ function sum(rows, F) {
   for (const t of TYPES) { s.tok[t] = 0; s.g[t] = 0; s.wh[t] = 0; }
   for (const r of rows) {
     s.calls += r.calls;
-    for (const t of TYPES) { s.tok[t] += r[t]; s.g[t] += r[t] * F[t].g; s.wh[t] += r[t] * F[t].wh; }
+    const f = F[r.family];
+    for (const t of TYPES) { s.tok[t] += r[t]; s.g[t] += r[t] * f[t].g; s.wh[t] += r[t] * f[t].wh; }
   }
   for (const t of TYPES) { s.G += s.g[t]; s.WH += s.wh[t]; s.TOK += s.tok[t]; }
   return s;
@@ -284,6 +291,7 @@ function render() {
   const all = sum(DATA.rows, F);
   const days = [...groupBy("day").entries()].sort((a, b) => a[0] < b[0] ? -1 : 1).map(([d, rs]) => [d, sum(rs, F)]);
   const projects = [...groupBy("project").entries()].map(([p, rs]) => [p, sum(rs, F)]).sort((a, b) => b[1].G - a[1].G);
+  const models = [...groupBy("family").entries()].map(([f, rs]) => [f, sum(rs, F)]).sort((a, b) => b[1].G - a[1].G);
 
   // Tiles
   today = new Date().toLocaleDateString("en-CA");
@@ -338,13 +346,19 @@ function render() {
     `<li><span class="d">${d}</span><span class="g">${fmtGs(s.G)}</span><span>≈ ${esc(compare(s.G, d))}</span></li>`).join("");
   $("dailySub").textContent = `${days.length} day${days.length === 1 ? "" : "s"} with usage. Hover a bar for the breakdown.`;
 
-  // Projects
-  const maxP = Math.max(1, ...projects.map(p => p[1].G));
-  $("projects").innerHTML = projects.map(([p, s]) =>
-    `<div class="name" title="${esc(p)}">${esc(p)}</div>` +
-    `<div class="bar" data-tip="${esc(tipBody(p, s))}" style="width:${Math.max(0.5, 100 * s.G / maxP)}%">` +
-    TYPES.filter(t => s.g[t] > 0).map(t => `<span style="flex:${s.g[t]};background:${col(t)}"></span>`).join("") + `</div>` +
-    `<div class="v">${fmtGs(s.G)}</div>`).join("");
+  // Projects and models
+  const ranked = items => {
+    const max = Math.max(1, ...items.map(p => p[1].G));
+    return items.map(([p, s]) =>
+      `<div class="name" title="${esc(p)}">${esc(p)}</div>` +
+      `<div class="bar" data-tip="${esc(tipBody(p, s))}" style="width:${Math.max(0.5, 100 * s.G / max)}%">` +
+      TYPES.filter(t => s.g[t] > 0).map(t => `<span style="flex:${s.g[t]};background:${col(t)}"></span>`).join("") + `</div>` +
+      `<div class="v">${fmtGs(s.G)}</div>`).join("");
+  };
+  $("projects").innerHTML = ranked(projects);
+  $("models").innerHTML = ranked(models.map(([f, s]) => [DATA.families[f].label, s]));
+  $("modelsSub").textContent = models.map(([f, s]) =>
+    `${DATA.families[f].label}: ${s.calls.toLocaleString()} calls, ${DATA.families[f].confidence} confidence`).join(" · ");
 
   // Share of tokens vs carbon
   const shareBar = (label, vals, total, unit) =>
@@ -363,13 +377,13 @@ function render() {
     `<tr><td><b>Total</b></td>${TYPES.map(t => `<td><b>${all.tok[t].toLocaleString()}</b></td>`).join("")}<td><b>${all.calls.toLocaleString()}</b></td><td><b>${all.WH.toFixed(1)}</b></td><td><b>${all.G.toFixed(1)}</b></td><td class="eqcell"><b>${esc(compare(all.G, today))}</b></td></tr></tbody>`;
 
   bindTips(document);
-  store("cr", $("cr").value); store("cw", $("cw").value);
+  store("cr2", $("cr").value); store("cw2", $("cw").value);
 }
 
 $("gen").textContent = "Updated " + new Date(DATA.generated).toLocaleString();
 const idx = (steps, v) => Math.max(0, steps.indexOf(v));
-$("cr").value = store("cr") ?? idx(CR_STEPS, DATA.scales.cache_read);
-$("cw").value = store("cw") ?? idx(CW_STEPS, DATA.scales.cache_write);
+$("cr").value = store("cr2") ?? idx(CR_STEPS, DATA.scales.cache_read);
+$("cw").value = store("cw2") ?? idx(CW_STEPS, DATA.scales.cache_write);
 $("cr").addEventListener("input", render);
 $("cw").addEventListener("input", render);
 render();
