@@ -72,6 +72,42 @@ explore this, and the defaults live at the top of `token_carbon.py`
 (`CACHE_READ_SCALE`, `CACHE_WRITE_SCALE`). Opus factors are applied to every
 model, which overstates Sonnet and Haiku usage.
 
+## Everyday equivalents
+
+To make the numbers tangible, each day's total (and the overall and today's
+totals) is matched to the nearest item, on a log scale, in the
+[ALPLA CO₂ Comparison Tool](https://www.alpla.com/en/sustainability/co2-comparison-tool),
+e.g. 3.1 kg ≈ 0.8 hamburgers with fries. The factors were read from the
+calculator's own script on 2026-10-01 and live in `COMPARISONS` in
+`token_carbon.py`:
+
+| Item | kg CO₂e each |
+|---|---:|
+| Google search | 0.0002 |
+| Message sent to ChatGPT | 0.00432 |
+| PET bottle cap | 0.0048 |
+| 1 l reusable PET bottle | 0.00632 |
+| 1 l recycled-PET bottle | 0.0084 |
+| 1 l reusable glass bottle | 0.01308 |
+| 250 ml HDPE bottle | 0.038 |
+| Hour of video streaming | 0.055 |
+| 1 l PET bottle | 0.065 |
+| 500 ml aluminium can | 0.089 |
+| Detergent bottle | 0.165 |
+| Coffee cup | 0.4 |
+| Portion of spaghetti with tomato sauce | 0.488 |
+| Hamburger with fries | 4 |
+| A tree's annual CO₂ uptake | 24.62 |
+| Manufactured smartphone | 80 |
+| Economy flight Zurich–London | 232 |
+| Year of driving an average car | 4,600 |
+| Year of an average European's emissions | 7,250 |
+| Year of an average American's emissions | 13,800 |
+
+Packaging items are for production in Germany. These are ALPLA's figures, and
+ALPLA is a plastic packaging manufacturer, so treat the packaging rows in
+particular as one company's numbers rather than an independent reference.
+
 ## Limitations
 
 - Covers one machine. Sessions on other machines or in the cloud are not

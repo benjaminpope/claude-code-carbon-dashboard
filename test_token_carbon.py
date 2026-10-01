@@ -93,6 +93,20 @@ class TokenCarbonTest(unittest.TestCase):
         self.assertAlmostEqual(g["input"], tc.INPUT_G)
         self.assertAlmostEqual(g["output"], tc.OUTPUT_G)
 
+    def test_comparison_exact_match_is_singular(self):
+        self.assertEqual(tc.format_comparison(4.0), "1 hamburger with fries")
+        self.assertEqual(tc.format_comparison(232.0), "1 economy flight Zurich–London")
+
+    def test_comparison_picks_nearest_on_log_scale(self):
+        # 3.1 kg is 0.78 hamburgers but 6.4 spaghetti portions: hamburger is nearer.
+        self.assertEqual(tc.format_comparison(3.1), "0.8 hamburgers with fries")
+        self.assertEqual(tc.format_comparison(9000), "1.2 years of an average European's emissions")
+
+    def test_comparisons_are_sorted_and_positive(self):
+        kgs = [c["kg"] for c in tc.COMPARISONS]
+        self.assertEqual(kgs, sorted(kgs))
+        self.assertTrue(all(k > 0 for k in kgs))
+
     def test_html_embeds_data(self):
         self.write("s1.jsonl", [call("m1", "s1", "/Users/me/code/demo")])
         out = Path(self.tmp.name) / "dash.html"

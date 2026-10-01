@@ -22,7 +22,7 @@ assumptions, not measurements; change them if you have better data.
 Usage:
     token_carbon.py                        # all history, all projects
     token_carbon.py --since 2026-09-01     # only days on or after this date
-    token_carbon.py --project drpangloss   # substring match on project name
+    token_carbon.py --project myproject    # substring match on project name
     token_carbon.py --by project           # also: session, model, day
     token_carbon.py --json                 # machine-readable output
     token_carbon.py --html dashboard.html  # self-contained dashboard page
@@ -31,6 +31,7 @@ Usage:
 import argparse
 import fcntl
 import json
+import math
 import os
 import re
 import sys
@@ -62,9 +63,57 @@ FACTORS = {  # (Wh, g CO2e) per million tokens
     "output": (OUTPUT_WH, OUTPUT_G),
 }
 
+# Everyday equivalents, kg CO2e per unit, from the ALPLA CO2 Comparison Tool
+# (https://www.alpla.com/en/sustainability/co2-comparison-tool, read 2026-10-01;
+# factors taken from the calculator's own script). Packaging is produced in
+# Germany. ALPLA is a plastic packaging maker; the figures are theirs.
+COMPARISONS = [
+    {"kg": 0.0002, "one": "Google search", "many": "Google searches"},
+    {"kg": 0.00432, "one": "message sent to ChatGPT", "many": "messages sent to ChatGPT"},
+    {"kg": 0.0048, "one": "PET bottle cap", "many": "PET bottle caps"},
+    {"kg": 0.00632, "one": "1 l reusable PET bottle", "many": "1 l reusable PET bottles"},
+    {"kg": 0.0084, "one": "1 l recycled-PET bottle", "many": "1 l recycled-PET bottles"},
+    {"kg": 0.01308, "one": "1 l reusable glass bottle", "many": "1 l reusable glass bottles"},
+    {"kg": 0.038, "one": "250 ml HDPE bottle", "many": "250 ml HDPE bottles"},
+    {"kg": 0.055, "one": "hour of video streaming", "many": "hours of video streaming"},
+    {"kg": 0.065, "one": "1 l PET bottle", "many": "1 l PET bottles"},
+    {"kg": 0.089, "one": "500 ml aluminium can", "many": "500 ml aluminium cans"},
+    {"kg": 0.165, "one": "detergent bottle", "many": "detergent bottles"},
+    {"kg": 0.4, "one": "coffee cup", "many": "coffee cups"},
+    {"kg": 0.488, "one": "portion of spaghetti with tomato sauce",
+     "many": "portions of spaghetti with tomato sauce"},
+    {"kg": 4.0, "one": "hamburger with fries", "many": "hamburgers with fries"},
+    {"kg": 24.62, "one": "tree's annual CO\u2082 uptake", "many": "trees' annual CO\u2082 uptake"},
+    {"kg": 80.0, "one": "manufactured smartphone", "many": "manufactured smartphones"},
+    {"kg": 232.0, "one": "economy flight Zurich\u2013London",
+     "many": "economy flights Zurich\u2013London"},
+    {"kg": 4600.0, "one": "year of driving an average car",
+     "many": "years of driving an average car"},
+    {"kg": 7250.0, "one": "year of an average European's emissions",
+     "many": "years of an average European's emissions"},
+    {"kg": 13800.0, "one": "year of an average American's emissions",
+     "many": "years of an average American's emissions"},
+]
+
+
+def closest_comparison(kg):
+    """The everyday equivalent nearest to kg on a log scale, as (count, label)."""
+    if kg <= 0:
+        return 0, COMPARISONS[0]["many"]
+    best = min(COMPARISONS, key=lambda c: abs(math.log(kg / c["kg"])))
+    count = kg / best["kg"]
+    shown = round(count, 1) if count < 10 else round(count)
+    return count, best["one"] if shown == 1 else best["many"]
+
+
+def format_comparison(kg):
+    count, label = closest_comparison(kg)
+    number = f"{count:.1f}".removesuffix(".0") if count < 10 else f"{round(count):,}"
+    return f"{number} {label}"
+
 
 def project_name(project, cwds):
-    """Readable name for a ~/.claude/projects directory, e.g. 'drpangloss'."""
+    """Readable name for a ~/.claude/projects directory, e.g. 'myproject'."""
     for cwd in cwds:
         if re.sub(r"[^A-Za-z0-9]", "-", cwd) == project:
             return Path(cwd).name
@@ -191,6 +240,7 @@ def write_html(records, out_path):
         "factors": {t: {"wh": INPUT_WH if t != "output" else OUTPUT_WH,
                         "g": INPUT_G if t != "output" else OUTPUT_G} for t in TYPES},
         "scales": {"cache_write": CACHE_WRITE_SCALE, "cache_read": CACHE_READ_SCALE},
+        "comparisons": COMPARISONS,
         "rows": [{"day": d, "project": p, **r} for (d, p), r in sorted(rows.items())],
     }
     html = TEMPLATE.read_text().replace(
@@ -211,6 +261,7 @@ def print_table(result):
                   f"{row['g_co2e'][t]:>12.1f}{row['g_co2e'][t] / total:>8.0%}")
         print(f"{'total':<12}{sum(row['tokens'].values()):>16,}"
               f"{row['wh']['total']:>12.1f}{row['g_co2e']['total']:>12.1f}")
+        print(f"\u2248 {format_comparison(row['g_co2e']['total'] / 1000)}")
     print(f"\nCache scales vs input: write x{CACHE_WRITE_SCALE}, read x{CACHE_READ_SCALE} "
           "(assumptions). Opus factors applied to every model.", file=sys.stderr)
 
