@@ -44,7 +44,7 @@ import carbon_common as cc
 # adding the scope 3 (transmission loss) factor would make it 0.85.
 # A GPU job without a measured GPU usage takes, as its mid value, the median
 # measured usage of jobs with the same name (when at least gpu_peers_min have
-# one), keeping the default's low and high. Jobs not yet finished are not
+# one), widening the default's low and high to include it. Unfinished jobs are not
 # costed: sacct's elapsed time is a snapshot and they have no Job Report.
 PARAMS = {
     "p_core_w": 225 / 32, "p_gpu_w": 400.0,
@@ -271,7 +271,8 @@ def job_kwh(r, params=PARAMS, gpu_peer_pct=None):
             u_cpu = params["u_cpu_default"]
     u_gpu = params["u_gpu_default"]
     if r.get("gpu_pct") is None and gpu_peer_pct is not None:
-        u_gpu = (u_gpu[0], gpu_peer_pct / 100, u_gpu[2])
+        peer = gpu_peer_pct / 100
+        u_gpu = (min(u_gpu[0], peer), peer, max(u_gpu[2], peer))
     u_gpu = usage(r.get("gpu_pct"), u_gpu)
     kwh = [cc.green_algorithms_kwh(elapsed / 3600, n_cpu=ncpu, p_core_w=params["p_core_w"],
                                    u_cpu=u_cpu[i], n_gpu=ngpu, p_gpu_w=params["p_gpu_w"],

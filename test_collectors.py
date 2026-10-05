@@ -217,8 +217,10 @@ class SlurmTest(unittest.TestCase):
         p = carbon_slurm.PARAMS
         mid = (225 / 32 + 400 * 0.20) * 1.67 / 1000
         self.assertAlmostEqual(item["kwh"][1], mid)
-        lo = (225 / 32 + 400 * p["u_gpu_default"][0]) * 1.67 / 1000
-        self.assertAlmostEqual(item["kwh"][0], lo)
+        # The default low (0.25) is above the peers' median, so low = mid.
+        self.assertEqual(p["u_gpu_default"][0], 0.25)
+        self.assertAlmostEqual(item["kwh"][0], mid)
+        self.assertLessEqual(item["kwh"][0], item["kwh"][1])
 
     def test_cpu_usage_falls_back_to_totalcpu(self):
         job = carbon_slurm.parse_sacct(SACCT)["17938486"]
