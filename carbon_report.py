@@ -226,6 +226,13 @@ def attribute(items, cfg, ledger, offline=False):
             pr = min(found[i["sha"]]["prs"])
         i["pr"] = pr
         i["override"] = label is not None
+        # Work for a PR from an excluded branch (e.g. CI on main after its
+        # merge) takes that branch's class.
+        p = prs.get(str(pr)) if pr is not None else None
+        if p and i["class"] in HEADLINE_CLASSES:
+            branch_class = cc.classify(cfg.get("classes", {}), branch=p["branch"])
+            if branch_class not in HEADLINE_CLASSES:
+                i["class"] = branch_class
         if label is None:
             p = prs.get(str(pr)) if pr is not None else None
             label = f"#{pr} {p['title']}" if p else f"#{pr}" if pr is not None else UNATTRIBUTED

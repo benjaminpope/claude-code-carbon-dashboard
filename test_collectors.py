@@ -402,6 +402,15 @@ class LedgerAndReportTest(unittest.TestCase):
             s = json.loads(summary.read_text())
             self.assertEqual(s["by_class"]["science"]["n"], 1)
             self.assertEqual(s["total"]["n"], 1)
+            # CI on main after that PR merged follows the PR's branch.
+            cc.update_ledger(ledger, {
+                "gha": {"me/demo#3": dict(run, head_branch="main", pr=5)},
+                "prs": {"5": {"number": 5, "title": "Fit", "branch": "apep-fit",
+                              "created": "2026-09-30"}}})
+            carbon_report.main(["--config", str(cfg_path), "--ledger", str(ledger), "--offline",
+                                "--summary", str(summary)])
+            s = json.loads(summary.read_text())
+            self.assertEqual(s["by_class"]["science"]["n"], 2)
 
     def test_report_from_ledger(self):
         with tempfile.TemporaryDirectory() as d:
