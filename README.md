@@ -38,8 +38,8 @@ loads. Re-run `./install.sh` after pulling changes.
 - **Reads** the transcripts Claude Code keeps in `~/.claude/projects/`,
   including subagent transcripts. It uses only the `usage` block of each API
   call and never reads or stores conversation text.
-- **Keeps** per-session, per-day, per-model token totals in
-  `~/.claude/carbon/history.json`. Claude Code deletes transcripts after
+- **Keeps** per-session, per-day, per-model, per-branch token totals (with
+  the working directory) in `~/.claude/carbon/history.json`. Claude Code deletes transcripts after
   `cleanupPeriodDays` (30 by default); the history keeps those days counted
   afterwards. Back this file up if the record matters to you.
 - **Sends nothing anywhere.** Everything stays on your machine.
@@ -48,9 +48,19 @@ loads. Re-run `./install.sh` after pulling changes.
 
 ```bash
 ~/.claude/carbon/token_carbon.py                       # totals
-~/.claude/carbon/token_carbon.py --by project          # also: day, model, session
-~/.claude/carbon/token_carbon.py --since 2026-09-01 --json
+~/.claude/carbon/token_carbon.py --by project          # also: day, model, session, family, branch
+~/.claude/carbon/token_carbon.py --since 2026-09-01 --until 2026-09-30 --json
 ```
+
+`--by branch` groups by the git branch Claude Code recorded for each call.
+`--json` also lists the underlying records, with their branch and working
+directory.
+
+Histories written before branches were recorded are migrated on the first
+run: each old session/day/model record becomes branch `?` and keeps its old
+counts as a floor. While its transcript still exists the counts move to
+their real branches and the `?` record empties, so totals do not change;
+once the transcript is gone the old counts stay under `?`.
 
 ## Emission factors
 
@@ -68,7 +78,7 @@ the [TokenClimate methodology](https://tokenclimate.com/en/methodology)
 - Cache write = input energy; cache read = 0.08 × input energy
   (TokenClimate's "cache energy" factor, plausible range 0.05–0.20).
 - CO₂e = energy × 0.37618 g/Wh: datacentre overhead (PUE 1.14) × grid
-  intensity (0.287 kg/kWh), plus 49 g/kWh of amortised hardware carbon.
+  intensity (0.287 kg/kWh), plus 49 g/kWh of amortized hardware carbon.
 - The family is read from the model name (`claude-sonnet-5-5` → Sonnet).
   Models that match no family are counted as Opus, and the command line lists
   them.
@@ -122,17 +132,137 @@ Packaging items are for production in Germany. These are ALPLA's figures, and
 ALPLA is a plastic packaging manufacturer, so treat the packaging rows in
 particular as one company's numbers rather than an independent reference.
 
+## Development carbon for a repository
+
+`carbon_report.py` extends the accounting from Claude Code to everything
+that went into developing one repository, and writes a markdown page and a
+badge. It is installed alongside `token_carbon.py`. Sources, each a flat
+module:
+
+| Module | Source | Telemetry | Energy model |
+|---|---|---|---|
+| `token_carbon.py` | Claude Code | tokens by type, from transcripts | TokenClimate |
+| `carbon_vscode.py` | VS Code Copilot Chat | prompt and output tokens per request, from chat session logs | TokenClimate, by assumed model class |
+| `carbon_copilot.py` | Copilot cloud agent and code review | run time of their Actions runs; billed AI Credits and premium requests | TokenClimate Sonnet factors |
+| `carbon_gha.py` | GitHub Actions CI | runner time per job | Green Algorithms |
+| `carbon_slurm.py` | Slurm jobs (OzSTAR/NT) | sacct allocation and run time; NT Job Report usage; `submissions.tsv` | Green Algorithms |
+
+Every estimate has a low, mid and high value, and the parameters of each
+model are in one table at the top of its module (`PARAMS`, plus
+`MODEL_CLASSES` and `RUNNERS`), with their sources and which values are
+assumptions.
+
+```bash
+~/.claude/carbon/carbon_report.py --config dev_carbon.toml \
+    --markdown docs/dev_carbon.md --summary docs/generated/dev_carbon.json --badge
+~/.claude/carbon/carbon_report.py --config dev_carbon.toml --offline   # ledger only
+```
+
+It needs `gh` (logged in) for the GitHub sources and `ssh` access without a
+password prompt for the remote Slurm logs; a source that is unavailable is
+skipped with a warning. The billing endpoints need the `user` scope:
+`gh auth refresh -h github.com -s user`.
+
+**Ledger.** Raw records go into a JSON ledger
+(`~/.claude/carbon/ledger-<repo>.json` by default), keyed by request id,
+run id or job id and max-merged like the history, so records survive after
+VS Code chat logs, sacct records (about six months on NT) or GitHub's usage
+report expire. Costing is done at report time, so changing a parameter
+needs no re-fetch.
+
+**Config.** TOML (Python 3.11+, or with `tomli`) or the same structure as
+JSON:
+
+```toml
+repo = "owner/name"                 # GitHub slug
+github_user = "owner"               # for the billing endpoints
+ledger = "~/.claude/carbon/ledger-name.json"   # optional
+since = "2026-01-01"                # optional day range
+until = "2026-12-31"
+
+[claude]
+projects = ["name"]                 # substrings of project name, folder or cwd
+
+[vscode]
+folders = ["~/code/name"]           # workspaces at or under these paths
+storage = "~/Library/Application Support/Code/User"   # optional
+
+[gha]
+enabled = true                      # any source can be switched off
+
+[slurm]
+host = "nt"                         # ssh host; omit for local logs only
+user = "me"                         # for sacct
+start = "2026-01-01"                # sacct start date
+local_dirs = ["~/code/name/ozstar"] # searched recursively for *.out
+remote_dirs = ["/fred/.../jobs/*/logs"]
+include = ["*"]                     # job-name or log-folder globs
+exclude = ["gpu-test"]
+
+[classes.science]                   # excluded from the headline, listed separately
+jobs = ["analysis_*"]
+dirs = ["*/analysis/*"]
+branches = ["analysis-*"]
+
+[classes.validation]                # counted, shown as validation
+jobs = ["sbc*"]
+
+[features]                          # feature label overrides
+"some-branch" = "Label"
+"job:bench_*" = "Benchmarks"
+
+[params.slurm]                      # override any module PARAMS entry
+pue = 1.4
+```
+
+Unclassified items count as development. Items are attributed to features
+through pull requests: by branch (`gh pr list`), by the commit a job pinned
+in `submissions.tsv` (`gh api repos/<slug>/commits/<sha>/pulls`), or by the
+PR a Copilot run served, and labelled with the PR title. Work on `main` is
+"main / unattributed".
+
+**How each source is read and costed**
+
+- *VS Code Copilot Chat.* The chat logs are operation logs (a snapshot, then
+  set and append patches), so they are replayed rather than searched; token
+  counts are set several times as a response streams. Requests are
+  deduplicated on request id, and undone requests still count. The model
+  actually used (requests say `copilot/auto`) is read from the result
+  metadata. Claude models use their TokenClimate family; GPT and other
+  models are given an assumed class with a range. Prompts are costed as
+  uncached input (`cached_fraction` sets a cached share); the high value
+  counts the prompt of every model call in an agent request. Older requests
+  without counts take the median of counted ones.
+- *Copilot cloud.* AI Credits are token-metered, so they are converted to
+  tokens at the credits-per-token rate measured on the local chat logs. Local
+  chat credits are subtracted (VS Code counts them), and account-wide rows
+  are attributed by the repository's share of local use or of agent PRs.
+  Where a month has no billing, run time times a token rate (also measured
+  locally) is used; the report shows both, month by month.
+- *GitHub Actions.* The sum of job durations of each finished run, on a
+  4-vCPU, 16 GB runner, at an assumed PUE and the US average grid.
+- *Slurm.* Green Algorithms with the allocation from sacct and measured CPU
+  and GPU usage from the NT Job Report, NT's EPYC 7543 and A100 power, and
+  Victoria's grid factor from the National Greenhouse Accounts Factors 2026.
+
+References: [TokenClimate methodology](https://tokenclimate.com/en/methodology);
+Lannelongue, Grealey & Inouye (2021), [Green Algorithms](https://doi.org/10.1002/advs.202100707),
+*Advanced Science* 8, 2100707;
+DCCEEW (2026), [Australian National Greenhouse Accounts Factors](https://www.dcceew.gov.au/climate-change/publications/national-greenhouse-accounts-factors).
+
 ## Related
 
 [TokenClimate](https://tokenclimate.com), whose factors this uses, also
 publishes an open-source Claude Code plugin called `claude-carbon` and a
-hosted dashboard for organisation-wide usage. This project is independent of
+hosted dashboard for organization-wide usage. This project is independent of
 both: a local, single-machine dashboard with a persistent history.
 
 ## Limitations
 
 - Covers one machine. Sessions on other machines or in the cloud are not
   included; each person runs their own copy.
+- Copilot's cloud inference and non-Claude models' energy are inferred, not
+  measured, and carry wide ranges.
 - Usage from before installation is included only if its transcripts still
   exist when the tool first runs.
 - Estimates depend entirely on third-party factors and the cache assumptions
@@ -141,7 +271,7 @@ both: a local, single-machine dashboard with a persistent history.
 ## Development
 
 ```bash
-python3 -m unittest -v
+python3 -m pytest        # or: python3 -m unittest -v
 ```
 
 ## Uninstall

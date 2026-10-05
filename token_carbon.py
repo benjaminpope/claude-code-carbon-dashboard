@@ -8,9 +8,10 @@ uncached input, cache writes, cache reads and output.
 Claude Code deletes transcripts after `cleanupPeriodDays` (30 by default), so
 every run also folds the totals into a history file (history.json in the data
 directory, ~/.claude/carbon by default). Totals are kept per session, day and
-model; a record whose transcript has been deleted keeps its last value. All
-reports read from that history, so they keep covering days whose transcripts
-are gone. The history holds token counts only, never conversation text.
+model and git branch; a record whose transcript has been deleted keeps its last
+value. All reports read from that history, so they keep covering days whose
+transcripts are gone. The history holds token counts, the branch and the
+working directory only, never conversation text.
 
 Energy and emission factors follow the TokenClimate methodology
 (tokenclimate-v3-2026-09, https://tokenclimate.com/en/methodology): per-family
@@ -22,8 +23,9 @@ are counted as Opus and reported as such.
 Usage:
     token_carbon.py                        # all history, all projects
     token_carbon.py --since 2026-09-01     # only days on or after this date
+    token_carbon.py --until 2026-09-30     # only days on or before this date
     token_carbon.py --project myproject    # substring match on project name
-    token_carbon.py --by project           # also: session, model, family, day
+    token_carbon.py --by project           # also: session, model, family, day, branch
     token_carbon.py --json                 # machine-readable output
     token_carbon.py --html dashboard.html  # self-contained dashboard page
 """
@@ -57,7 +59,7 @@ FAMILIES = {
 FALLBACK_FAMILY = "opus"
 
 # CO2e per Wh of server energy: datacentre overhead (PUE) times grid carbon
-# intensity, plus amortised hardware (embodied) carbon. AWS parameters from
+# intensity, plus amortized hardware (embodied) carbon. AWS parameters from
 # TokenClimate: PUE 1.14, 0.287 kg/kWh, 49 g/kWh.
 PUE, GRID_G_PER_WH, EMBODIED_G_PER_WH = 1.14, 0.287, 0.049
 CO2_G_PER_WH = PUE * GRID_G_PER_WH + EMBODIED_G_PER_WH  # 0.37618
@@ -73,7 +75,7 @@ COUNTS = TYPES + ("calls",)
 
 
 def model_family(model):
-    """'claude-sonnet-5-5' -> 'sonnet'. Unrecognised models count as Opus."""
+    """'claude-sonnet-5-5' -> 'sonnet'. Unrecognized models count as Opus."""
     m = model.lower()
     for family in FAMILIES:
         if family in m:
@@ -168,8 +170,17 @@ def project_name(project, cwds):
     return "scratch" if "-scratch-" in project else project
 
 
+def record_key(session, day, model, branch):
+    return f"{session}|{day}|{model}|{branch}"
+
+
 def scan_transcripts(projects=PROJECTS):
-    """Totals from the transcripts on disk, keyed by session|day|model."""
+    """Totals from the transcripts on disk, keyed by session|day|model|branch.
+
+    The branch is the transcript's gitBranch at the time of each call ("-"
+    outside a git repository), so a session that switches branch splits
+    into one record per branch.
+    """
     records, seen, cwds = {}, set(), defaultdict(set)
     for path in sorted(projects.rglob("*.jsonl")):
         project = path.relative_to(projects).parts[0]
@@ -200,10 +211,12 @@ def scan_transcripts(projects=PROJECTS):
             session = rec.get("sessionId", path.stem)
             day = rec.get("timestamp", "")[:10]
             model = msg.get("model", "unknown")
-            r = records.setdefault(f"{session}|{day}|{model}", {
-                "session": session, "day": day, "model": model,
+            branch = rec.get("gitBranch") or "-"
+            r = records.setdefault(record_key(session, day, model, branch), {
+                "session": session, "day": day, "model": model, "branch": branch,
                 "project_dir": project, **{c: 0 for c in COUNTS},
             })
+            r["cwd"] = rec.get("cwd", "")
             r["calls"] += 1
             r["input"] += usage.get("input_tokens", 0) or 0
             r["cache_write"] += usage.get("cache_creation_input_tokens", 0) or 0
@@ -214,13 +227,34 @@ def scan_transcripts(projects=PROJECTS):
     return records
 
 
+def migrate(history):
+    """Rekey records from before branches were kept, in place.
+
+    Old keys are session|day|model. They become session|day|model|? and keep
+    their counts under "legacy", so merge() can tell how much of them the
+    branch-keyed records now cover.
+    """
+    for key in [k for k in history if k.count("|") == 2]:
+        r = history.pop(key)
+        r.update(branch="?", cwd=r.get("cwd", ""), legacy={c: r.get(c, 0) for c in COUNTS})
+        history[f"{key}|?"] = r
+    return history
+
+
 def merge(history, current):
     """Fold current transcript totals into the history, in place.
 
     A transcript only grows until it is deleted, so each count keeps the
     larger of its stored and current values. Records with no transcript left
     keep what was stored.
+
+    A migrated record (branch "?") holds whatever its legacy counts exceed the
+    branch records of the same session, day and model, so each count for that
+    group totals max(legacy, sum over branches): rescanning a transcript that
+    still exists moves its counts to their branches without double counting,
+    and a deleted one keeps its old total under "?".
     """
+    migrate(history)
     for key, cur in current.items():
         old = history.get(key)
         if old is None:
@@ -229,6 +263,17 @@ def merge(history, current):
         for c in COUNTS:
             old[c] = max(old.get(c, 0), cur[c])
         old["project"] = cur["project"]
+        old["cwd"] = cur.get("cwd", old.get("cwd", ""))
+    covered = defaultdict(lambda: {c: 0 for c in COUNTS})
+    for key, r in history.items():
+        if "legacy" not in r:
+            for c in COUNTS:
+                covered[key.rsplit("|", 1)[0]][c] += r.get(c, 0)
+    for key, r in history.items():
+        if "legacy" in r:
+            done = covered.get(key.rsplit("|", 1)[0], {})
+            for c in COUNTS:
+                r[c] = max(0, r["legacy"][c] - done.get(c, 0))
     return history
 
 
@@ -236,27 +281,31 @@ def update_history(data_dir=DATA_DIR, projects=PROJECTS):
     """Scan transcripts, merge into history.json and return all records."""
     data_dir.mkdir(parents=True, exist_ok=True)
     path = data_dir / "history.json"
-    # Several sessions can finish a turn at once; serialise the read-merge-write.
+    # Several sessions can finish a turn at once; serialize the read-merge-write.
     with open(data_dir / "history.lock", "w") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
-        history = {}
+        stored = {"version": HISTORY_VERSION, "records": {}}
         if path.exists():
             stored = json.loads(path.read_text())
             if stored.get("version") != HISTORY_VERSION:
                 sys.exit(f"{path}: unknown history version {stored.get('version')}")
-            history = stored["records"]
+        history = stored["records"]
         merge(history, scan_transcripts(projects))
         tmp = path.with_suffix(".tmp")
-        tmp.write_text(json.dumps({"version": HISTORY_VERSION, "records": history}, indent=1))
+        # Keep any other top-level keys a newer version may have written.
+        tmp.write_text(json.dumps(stored, indent=1))
         tmp.replace(path)
     return list(history.values())
 
 
-def select(records, project=None, since=None):
+def select(records, project=None, since=None, until=None):
+    """Records for a project and day range; migrated records left empty drop out."""
     return [r for r in records
             if not r["model"].startswith("<")
+            and any(r.get(c, 0) for c in COUNTS)
             and (not project or project in r["project"] or project in r["project_dir"])
-            and (not since or r["day"] >= since)]
+            and (not since or r["day"] >= since)
+            and (not until or r["day"] <= until)]
 
 
 def tally(records, by=None):
@@ -264,7 +313,8 @@ def tally(records, by=None):
     groups = defaultdict(lambda: {"calls": 0, "tokens": zero(), "wh": zero(), "g_co2e": zero()})
     for r in records:
         family = model_family(r["model"])
-        g = groups[FAMILIES[family]["label"] if by == "family" else r[by] if by else "total"]
+        g = groups[FAMILIES[family]["label"] if by == "family"
+                   else r.get(by, "?") if by else "total"]
         g["calls"] += r["calls"]
         for t in TYPES:
             wh = r[t] / 1e6 * wh_per_mtok(family, t)
@@ -331,17 +381,21 @@ def print_table(result, by=None, unknown=()):
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--since", help="ISO date, e.g. 2026-09-01")
+    ap.add_argument("--until", help="ISO date, inclusive")
     ap.add_argument("--project", help="substring of the project name")
-    ap.add_argument("--by", choices=["project", "session", "model", "family", "day"])
+    ap.add_argument("--by", choices=["project", "session", "model", "family", "day", "branch"])
     ap.add_argument("--json", action="store_true")
     ap.add_argument("--html", metavar="PATH", help="write the dashboard to PATH")
     args = ap.parse_args()
-    records = select(update_history(), args.project, args.since)
+    records = select(update_history(), args.project, args.since, args.until)
     if args.html:
         write_html(records, args.html)
     elif args.json:
-        json.dump({"factors_per_million": factor_table(), "groups": tally(records, args.by)},
-                  sys.stdout, indent=2)
+        fields = ("session", "day", "model", "branch", "cwd", "project") + COUNTS
+        rows = [{f: r.get(f, "") for f in fields}
+                for r in sorted(records, key=lambda r: (r["day"], r["session"], r["model"]))]
+        json.dump({"factors_per_million": factor_table(), "groups": tally(records, args.by),
+                   "records": rows}, sys.stdout, indent=2)
         print()
     else:
         unknown = {r["model"] for r in records if not is_known_family(r["model"])}
