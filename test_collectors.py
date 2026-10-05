@@ -1,5 +1,6 @@
 """Tests for the collectors and the report. Run with: python3 -m pytest"""
 
+import datetime
 import json
 import tempfile
 import unittest
@@ -337,6 +338,53 @@ class LedgerAndReportTest(unittest.TestCase):
         old = {"a": {"n": 5, "state": "RUNNING"}, "b": {"n": 1}}
         cc.merge_records(old, {"a": {"n": 3, "state": "COMPLETED"}, "c": {"n": 2}})
         self.assertEqual(old, {"a": {"n": 5, "state": "COMPLETED"}, "b": {"n": 1}, "c": {"n": 2}})
+
+    def test_archive_keeps_expired_days_without_double_counting(self):
+        with tempfile.TemporaryDirectory() as d:
+            ledger, archive = Path(d) / "ledger.json", Path(d) / "archive.json"
+            run = {"repo": "me/demo", "workflow": "tests", "head_branch": "feat", "jobs": 1,
+                   "runner_s": {"ubuntu": 3600}}
+            old = dict(run, day="2020-01-01")
+            cc.update_ledger(ledger, {
+                "gha": {"me/demo#1": old, "me/demo#2": dict(old, runner_s={"ubuntu": 1800}),
+                        "me/demo#3": dict(run, day=datetime.date.today().isoformat())},
+                "prs": {"9": {"number": 9, "title": "Secret target", "branch": "feat",
+                              "created": "2019-12-01"}}})
+            cfg_path = Path(d) / "c.json"
+            cfg_path.write_text(json.dumps({"repo": "me/demo"}))
+
+            def total(*extra):
+                out = Path(d) / "s.json"
+                carbon_report.main(["--config", str(cfg_path), "--ledger", str(ledger),
+                                    "--offline", "--summary", str(out), *extra])
+                return json.loads(out.read_text())
+
+            plain = total()
+            first = total("--archive", str(archive))
+            self.assertAlmostEqual(first["total"]["kg"][1], plain["total"]["kg"][1])
+            rows = json.loads(archive.read_text())["rows"]
+            self.assertEqual(len(rows), 1)  # both 2020 runs, one aggregate
+            (row,) = rows.values()
+            self.assertEqual((row["n"], row["feature"], row["pr"]), (2, "#9", 9))
+            self.assertNotIn("Secret", archive.read_text())
+            self.assertIn("#9 Secret target", first["by_feature"])
+            # Again, and after the expired runs leave the ledger: same total.
+            self.assertAlmostEqual(total("--archive", str(archive))["total"]["kg"][1],
+                                   plain["total"]["kg"][1])
+            data = json.loads(ledger.read_text())
+            del data["sources"]["gha"]["me/demo#1"], data["sources"]["gha"]["me/demo#2"]
+            ledger.write_text(json.dumps(data))
+            again = total("--archive", str(archive))
+            self.assertAlmostEqual(again["total"]["kg"][1], plain["total"]["kg"][1])
+            self.assertEqual(again["archived"]["gha"]["n"], 1)
+
+    def test_hide_excluded_drops_names(self):
+        items = [{"class": "science", "label": "apep_fit", "feature": "#3 Apep", "pr": 3},
+                 {"class": "dev", "label": "tests", "feature": "#4 x", "pr": 4}]
+        carbon_report.hide_excluded(items)
+        self.assertEqual((items[0]["label"], items[0]["feature"], items[0]["pr"]),
+                         ("excluded", "", None))
+        self.assertEqual(items[1]["label"], "tests")
 
     def test_ci_run_on_science_branch_is_science(self):
         with tempfile.TemporaryDirectory() as d:

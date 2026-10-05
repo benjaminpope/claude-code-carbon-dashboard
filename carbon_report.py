@@ -23,7 +23,7 @@ import fnmatch
 import json
 import sys
 from collections import defaultdict
-from datetime import datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from urllib.parse import quote
 
@@ -225,11 +225,125 @@ def attribute(items, cfg, ledger, offline=False):
         if pr is None and i.get("sha") in found and found[i["sha"]].get("prs"):
             pr = min(found[i["sha"]]["prs"])
         i["pr"] = pr
+        i["override"] = label is not None
         if label is None:
             p = prs.get(str(pr)) if pr is not None else None
             label = f"#{pr} {p['title']}" if p else f"#{pr}" if pr is not None else UNATTRIBUTED
         i["feature"] = label
     return items
+
+
+# Days after which a source's raw records are gone, or about to be: Claude
+# Code deletes transcripts after 30 days, NT's sacct keeps about six months,
+# and GitHub keeps Actions runs and usage reports for about 90 days. A VS Code
+# chat record expires when its session file is deleted. Config:
+# [retention_days].
+RETENTION_DAYS = {"claude": 25, "slurm": 150, "gha": 85, "copilot": 85}
+ARCHIVE_VERSION = 1
+EXCLUDED_LABEL = "excluded"
+
+
+def hide_excluded(items):
+    """Drop the names (labels and features) of items outside the headline."""
+    for i in items:
+        if i["class"] not in HEADLINE_CLASSES:
+            i["label"] = EXCLUDED_LABEL
+            i["feature"] = ""
+            i["pr"] = None
+            i["override"] = True
+
+
+def expired(i, ledger, cfg, today):
+    """Whether an item's raw record has gone, or is about to, from its source."""
+    if i["source"] == "vscode_copilot":
+        r = ledger["sources"].get("vscode_copilot", {}).get(i["id"], {})
+        storage = Path(cfg.get("vscode", {}).get("storage", carbon_vscode.STORAGE))
+        session = (storage.expanduser() / "workspaceStorage" / r.get("workspace", "?")
+                   / "chatSessions" / f"{r.get('session', '?')}.jsonl")
+        return not session.exists()
+    days = {**RETENTION_DAYS, **cfg.get("retention_days", {})}.get(i["source"])
+    if days is None or not i["day"]:
+        return False
+    return i["day"] < (today - timedelta(days=days)).isoformat()
+
+
+def archive_feature(i):
+    """An archive row's feature: an override label or '#N', never a PR title."""
+    if i.get("override") or i.get("pr") is None:
+        return i.get("feature", UNATTRIBUTED)
+    return f"#{i['pr']}"
+
+
+def compact(items):
+    """Archive rows: items summed by day, source, label, kind, class and feature."""
+    rows = {}
+    for i in items:
+        feature = archive_feature(i)
+        key = "|".join((i["day"], i["source"], i["label"], i["kind"], i["class"], feature))
+        r = rows.setdefault(key, {
+            "day": i["day"], "source": i["source"], "label": i["label"], "kind": i["kind"],
+            "class": i["class"], "feature": feature, "pr": i.get("pr"),
+            "override": bool(i.get("override")), "n": 0, "calls": 0, "tokens": {},
+            "kg_by_type": {}, "kwh": [0.0] * 3, "kg": [0.0] * 3})
+        r["n"] += 1
+        r["calls"] += i.get("calls", 0)
+        r["kwh"] = add(r["kwh"], i["kwh"])
+        r["kg"] = add(r["kg"], i["kg"])
+        for f in ("tokens", "kg_by_type"):
+            for t, v in (i.get(f) or {}).items():
+                r[f][t] = r[f].get(t, 0) + v
+    return rows
+
+
+def merge_archive(old, new):
+    """Max-merge archive rows into old, field by field, so totals never drop."""
+    for key, r in new.items():
+        prev = old.get(key)
+        if prev is None:
+            old[key] = r
+            continue
+        for f, v in r.items():
+            if isinstance(v, list):
+                prev[f] = [max(a, b) for a, b in zip(prev.get(f, v), v)]
+            elif isinstance(v, dict):
+                d = prev.setdefault(f, {})
+                for t, x in v.items():
+                    d[t] = max(d.get(t, x), x)
+            elif isinstance(v, (int, float)) and not isinstance(v, bool):
+                prev[f] = max(prev.get(f, v), v)
+    return old
+
+
+def with_archive(items, cfg, ledger, path, today=None):
+    """Archive expired items into path; return the live items plus the archive.
+
+    A (source, day) with any expired item is archived whole, and from then on
+    that source's day is taken only from the archive, so nothing is counted
+    twice. Archive rows keep no PR titles; they are looked up again here.
+    """
+    today = today or date.today()
+    path = Path(path)
+    archive = (json.loads(path.read_text()) if path.exists()
+               else {"version": ARCHIVE_VERSION, "rows": {}})
+    gone = {(i["source"], i["day"]) for i in items if expired(i, ledger, cfg, today)}
+    merge_archive(archive["rows"],
+                  compact([i for i in items if (i["source"], i["day"]) in gone]))
+    archive["rows"] = dict(sorted(archive["rows"].items()))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(archive, indent=0, sort_keys=True) + "\n")
+    days = {(r["source"], r["day"]) for r in archive["rows"].values()}
+    out = [i for i in items if (i["source"], i["day"]) not in days]
+    prs = ledger["sources"].get("prs", {})
+    since, until = cfg.get("since"), cfg.get("until")
+    for key, r in archive["rows"].items():
+        if (since and r["day"] < since) or (until and r["day"] > until):
+            continue
+        feature = r["feature"]
+        if not r.get("override") and str(r.get("pr")) in prs:
+            feature = f"#{r['pr']} {prs[str(r['pr'])]['title']}"
+        out.append({**r, "id": "archive:" + key, "feature": feature, "branch": None,
+                    "archived": True})
+    return out
 
 
 def add(a, b):
@@ -250,11 +364,12 @@ def summarize(items, check, cal, cfg):
     head = [i for i in items if i["class"] in HEADLINE_CLASSES]
     total = group(head, lambda i: "total").get("total", {"n": 0, "kwh": [0.0] * 3, "kg": [0.0] * 3})
     claude = [i for i in head if i["source"] == "claude"]
-    by_type = {t: {"tokens": sum(i["tokens"][t] for i in claude),
-                   "kg": sum(i["kg_by_type"][t] for i in claude)} for t in tc.TYPES}
+    by_type = {t: {"tokens": sum(i["tokens"].get(t, 0) for i in claude),
+                   "kg": sum(i["kg_by_type"].get(t, 0) for i in claude)} for t in tc.TYPES}
     return {
         "repo": cfg["repo"],
         "generated": datetime.now().astimezone().isoformat(timespec="minutes"),
+        "archived": group([i for i in items if i.get("archived")], lambda i: i["source"]),
         "first_day": min((i["day"] for i in head if i["day"]), default=None),
         "last_day": max((i["day"] for i in head if i["day"]), default=None),
         "total": total,
@@ -432,6 +547,9 @@ def main(argv=None):
     ap.add_argument("--markdown", metavar="PATH", help="write the page fragment")
     ap.add_argument("--summary", metavar="PATH", help="write the JSON summary")
     ap.add_argument("--badge", action="store_true", help="print the badge text and URL")
+    ap.add_argument("--archive", metavar="PATH",
+                    help="compact expired records into this archive (max-merged) and "
+                         "report the archive plus live records")
     args = ap.parse_args(argv)
     cfg = load_config(args.config)
     ledger_path = Path(args.ledger or cfg.get("ledger") or
@@ -443,6 +561,10 @@ def main(argv=None):
         ledger = collect(cfg, ledger_path, tuple(args.sources.split(",")))
     items, check, cal = cost_all(cfg, ledger)
     attribute(items, cfg, ledger, args.offline)
+    if cfg.get("hide_excluded"):
+        hide_excluded(items)
+    if args.archive:
+        items = with_archive(items, cfg, ledger, args.archive)
     summary = summarize(items, check, cal, cfg)
     summary["badge"] = {"text": badge_text(summary), "url": badge_url(summary)}
     if args.summary:

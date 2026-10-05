@@ -170,6 +170,16 @@ VS Code chat logs, sacct records (about six months on NT) or GitHub's usage
 report expire. Costing is done at report time, so changing a parameter
 needs no re-fetch.
 
+**Archive.** The ledger holds per-record detail and stays private. To keep a
+permanent copy in a repository, `--archive PATH` compacts the records whose
+source has expired, or is about to (Claude transcripts after 25 days, sacct
+jobs after 150, GitHub runs and billing after 85, VS Code requests whose
+session file is gone), into rows summed by day, source, model or workflow,
+kind, class and feature. Rows keep a PR number but not its title, and are
+max-merged, so totals never drop. A source's day that has any archived row
+is then reported from the archive only, and the rest from the ledger, so
+nothing is counted twice. Commit the archive; regenerate the rest.
+
 **Config.** TOML (Python 3.11+, or with `tomli`) or the same structure as
 JSON:
 
@@ -179,6 +189,10 @@ github_user = "owner"               # for the billing endpoints
 ledger = "~/.claude/carbon/ledger-name.json"   # optional
 since = "2026-01-01"                # optional day range
 until = "2026-12-31"
+hide_excluded = true                # drop names of non-headline items from all outputs
+
+[retention_days]                    # optional: when --archive takes a source's records
+gha = 85
 
 [claude]
 projects = ["name"]                 # substrings of project name, folder or cwd
