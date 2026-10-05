@@ -185,6 +185,10 @@ def cost_all(cfg, ledger):
     cop, check, cal = carbon_copilot.cost(
         src, slug, with_overrides(carbon_copilot.PARAMS, params.get("copilot")), gha_params)
     items += cop
+    # CI and Copilot runs follow their branch's class, like Claude sessions.
+    for i in items:
+        if i["source"] in ("gha", "copilot"):
+            i["class"] = cc.classify(classes, branch=i.get("branch"))
     s = cfg.get("slurm", {})
     items += carbon_slurm.cost(src.get("slurm", {}), classes, s.get("include", ["*"]),
                                s.get("exclude", []),

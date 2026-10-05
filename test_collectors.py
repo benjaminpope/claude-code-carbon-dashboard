@@ -338,6 +338,23 @@ class LedgerAndReportTest(unittest.TestCase):
         cc.merge_records(old, {"a": {"n": 3, "state": "COMPLETED"}, "c": {"n": 2}})
         self.assertEqual(old, {"a": {"n": 5, "state": "COMPLETED"}, "b": {"n": 1}, "c": {"n": 2}})
 
+    def test_ci_run_on_science_branch_is_science(self):
+        with tempfile.TemporaryDirectory() as d:
+            ledger = Path(d) / "ledger.json"
+            run = {"repo": "me/demo", "workflow": "tests", "day": "2026-10-01",
+                   "head_branch": "apep-fit", "jobs": 1, "runner_s": {"ubuntu": 3600}}
+            cc.update_ledger(ledger, {"gha": {"me/demo#1": run,
+                                              "me/demo#2": dict(run, head_branch="feat")}})
+            cfg_path = Path(d) / "c.json"
+            cfg_path.write_text(json.dumps({
+                "repo": "me/demo", "classes": {"science": {"branches": ["apep-*"]}}}))
+            summary = Path(d) / "s.json"
+            carbon_report.main(["--config", str(cfg_path), "--ledger", str(ledger), "--offline",
+                                "--summary", str(summary)])
+            s = json.loads(summary.read_text())
+            self.assertEqual(s["by_class"]["science"]["n"], 1)
+            self.assertEqual(s["total"]["n"], 1)
+
     def test_report_from_ledger(self):
         with tempfile.TemporaryDirectory() as d:
             ledger = Path(d) / "ledger.json"
