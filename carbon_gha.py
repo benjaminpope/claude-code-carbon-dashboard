@@ -141,8 +141,14 @@ def cost(records, params=PARAMS):
     for key, r in sorted(records.items()):
         if COPILOT_PATH.search(r.get("path", "")):
             continue
-        # A run whose jobs were never fetched counts its wall time on one runner.
-        runner_s = r.get("runner_s") or {"ubuntu": r.get("wall_s", 0.0)}
+        # A run whose jobs were never fetched counts its wall time on one
+        # runner. A run whose jobs were fetched and that had none (cancelled
+        # or failed before a runner started, or awaiting approval) used no
+        # runner: its wall time, which runs to updated_at, can span days.
+        if "jobs" in r or "runner_s" in r:
+            runner_s = r.get("runner_s") or {}
+        else:
+            runner_s = {"ubuntu": r.get("wall_s", 0.0)}
         kwh = [runner_kwh(runner_s, u, params["pue"]) for u in params["u_cpu"]]
         items.append({
             "source": "gha", "id": key, "day": r["day"], "label": r["workflow"],

@@ -202,6 +202,24 @@ class SlurmTest(unittest.TestCase):
         item = next(i for i in carbon_slurm.cost(job, {}) if i["id"] == "17938486")
         self.assertAlmostEqual(item["kg"][1], expected * 0.74)
 
+    def test_unfinished_jobs_not_costed(self):
+        job = carbon_slurm.parse_sacct(SACCT)["17938486"]
+        running = dict(job, state="RUNNING")
+        self.assertEqual(carbon_slurm.cost({"1": running}, {}), [])
+        self.assertEqual(len(carbon_slurm.cost({"1": job}, {})), 1)
+
+    def test_gpu_usage_imputed_from_same_name_jobs(self):
+        base = {"name": "camp", "elapsed_s": 3600, "ncpu": 1, "ngpu": 1, "cpu_pct": 100.0,
+                "state": "COMPLETED"}
+        jobs = {str(i): dict(base, gpu_pct=pct) for i, pct in enumerate((10.0, 20.0, 30.0))}
+        jobs["9"] = dict(base, state="TIMEOUT")
+        item = next(i for i in carbon_slurm.cost(jobs, {}) if i["id"] == "9")
+        p = carbon_slurm.PARAMS
+        mid = (225 / 32 + 400 * 0.20) * 1.67 / 1000
+        self.assertAlmostEqual(item["kwh"][1], mid)
+        lo = (225 / 32 + 400 * p["u_gpu_default"][0]) * 1.67 / 1000
+        self.assertAlmostEqual(item["kwh"][0], lo)
+
     def test_cpu_usage_falls_back_to_totalcpu(self):
         job = carbon_slurm.parse_sacct(SACCT)["17938486"]
         kwh, _ = carbon_slurm.job_kwh(job)
@@ -226,6 +244,17 @@ class GHATest(unittest.TestCase):
                                         "head_branch": "x", "runner_s": {"ubuntu": 3600}}})[0]
         self.assertAlmostEqual(item["kwh"][1], 0.0276828)
         self.assertAlmostEqual(item["kwh"][0], (2 * 4.375 + 16 * 0.3725) * 1.18 / 1000)
+
+    def test_run_without_jobs_uses_no_runner(self):
+        # A run cancelled before any job started has jobs == 0; its wall time
+        # (to updated_at, possibly days later) must not be counted.
+        base = {"workflow": "tests", "day": "2026-10-01", "head_branch": "x", "wall_s": 86400}
+        empty = carbon_gha.cost({"r#1": dict(base, jobs=0, runner_s={})})[0]
+        self.assertEqual(empty["kwh"], [0.0, 0.0, 0.0])
+        self.assertEqual(empty["runner_min"], 0.0)
+        # A run whose jobs were never fetched still falls back to wall time.
+        unfetched = carbon_gha.cost({"r#2": dict(base)})[0]
+        self.assertAlmostEqual(unfetched["runner_min"], 1440.0)
 
     def test_pr_number(self):
         self.assertEqual(carbon_gha.pr_number({"prs": [7]}), 7)

@@ -26,6 +26,7 @@ t x (n_cpu x P_core x u_cpu + n_gpu x P_gpu x u_gpu + mem x 0.3725 W/GB) x PUE.
 
 import fnmatch
 import re
+import statistics
 from datetime import datetime
 from pathlib import Path
 
@@ -41,11 +42,18 @@ import carbon_common as cc
 # Victoria's location-based scope 2 factor, 0.74 kg CO2e/kWh, from the
 # Australian National Greenhouse Accounts Factors 2026 (DCCEEW), Table 1;
 # adding the scope 3 (transmission loss) factor would make it 0.85.
+# A GPU job without a measured GPU usage takes, as its mid value, the median
+# measured usage of jobs with the same name (when at least gpu_peers_min have
+# one), keeping the default's low and high. Jobs not yet finished are not
+# costed: sacct's elapsed time is a snapshot and they have no Job Report.
 PARAMS = {
     "p_core_w": 225 / 32, "p_gpu_w": 400.0,
     "u_cpu_default": (0.5, 1.0, 1.0), "u_gpu_default": (0.25, 1.0, 1.0),
-    "n_cpu_default": 4, "pue": 1.67, "grid_kg_per_kwh": 0.74,
+    "n_cpu_default": 4, "pue": 1.67, "grid_kg_per_kwh": 0.74, "gpu_peers_min": 3,
 }
+
+UNFINISHED = {"RUNNING", "PENDING", "REQUEUED", "RESIZING", "SUSPENDED", "CONFIGURING",
+              "COMPLETING"}
 
 HEADER = re.compile(r"Job Report: (\d+) \(([A-Z_]+)\)")
 MEMORY = re.compile(r"Memory \(RAM\)\s+\[[^\]]*\]\s+([\d.]+)% \(([\d.]+) (\w+) peak / ([\d.]+) (\w+)\)")
@@ -243,8 +251,12 @@ def usage(measured_pct, default):
     return default
 
 
-def job_kwh(r, params=PARAMS):
-    """(low, mid, high) kWh for one job record, and whether it is a GPU job."""
+def job_kwh(r, params=PARAMS, gpu_peer_pct=None):
+    """(low, mid, high) kWh for one job record, and whether it is a GPU job.
+
+    gpu_peer_pct, if given, is the mid GPU usage (percent) for a job without
+    a measured one: the median of its peers with the same name.
+    """
     elapsed = r.get("elapsed_s") or r.get("report_elapsed_s") or 0.0
     ncpu = r.get("ncpu") or params["n_cpu_default"]
     ngpu = r.get("ngpu")
@@ -257,7 +269,10 @@ def job_kwh(r, params=PARAMS):
             u_cpu = (u, u, u)
         else:
             u_cpu = params["u_cpu_default"]
-    u_gpu = usage(r.get("gpu_pct"), params["u_gpu_default"])
+    u_gpu = params["u_gpu_default"]
+    if r.get("gpu_pct") is None and gpu_peer_pct is not None:
+        u_gpu = (u_gpu[0], gpu_peer_pct / 100, u_gpu[2])
+    u_gpu = usage(r.get("gpu_pct"), u_gpu)
     kwh = [cc.green_algorithms_kwh(elapsed / 3600, n_cpu=ncpu, p_core_w=params["p_core_w"],
                                    u_cpu=u_cpu[i], n_gpu=ngpu, p_gpu_w=params["p_gpu_w"],
                                    u_gpu=u_gpu[i], mem_gb=r.get("mem_alloc_gb") or 0.0,
@@ -272,11 +287,17 @@ def cost(records, classes, include=("*",), exclude=(), params=PARAMS):
         return any(fnmatch.fnmatch(r.get("name", ""), g) or fnmatch.fnmatch(r.get("log_dir", ""), g)
                    for g in globs)
 
+    by_name = {}
+    for r in records.values():
+        if r.get("gpu_pct") is not None:
+            by_name.setdefault(r.get("name", ""), []).append(r["gpu_pct"])
+    peers = {n: statistics.median(v) for n, v in by_name.items()
+             if len(v) >= params.get("gpu_peers_min", 3)}
     items = []
     for jobid, r in sorted(records.items()):
-        if not hit(r, include) or hit(r, exclude):
+        if not hit(r, include) or hit(r, exclude) or r.get("state") in UNFINISHED:
             continue
-        kwh, gpu = job_kwh(r, params)
+        kwh, gpu = job_kwh(r, params, peers.get(r.get("name", "")))
         items.append({
             "source": "slurm", "id": jobid, "day": r.get("day") or r.get("log_day", ""), "label": r.get("name", ""),
             "kind": "GPU job" if gpu else "CPU job", "branch": None, "pr": None,

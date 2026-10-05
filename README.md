@@ -240,10 +240,13 @@ PR a Copilot run served, and labelled with the PR title. Work on `main` is
   Where a month has no billing, run time times a token rate (also measured
   locally) is used; the report shows both, month by month.
 - *GitHub Actions.* The sum of job durations of each finished run, on a
-  4-vCPU, 16 GB runner, at an assumed PUE and the US average grid.
+  4-vCPU, 16 GB runner, at an assumed PUE and the US average grid. A run
+  with no jobs (cancelled or failed before a runner started) counts zero.
 - *Slurm.* Green Algorithms with the allocation from sacct and measured CPU
   and GPU usage from the NT Job Report, NT's EPYC 7543 and A100 power, and
   Victoria's grid factor from the National Greenhouse Accounts Factors 2026.
+  A GPU job without a Job Report takes the median measured GPU usage of jobs
+  with the same name; jobs still running or pending are left until they end.
 
 References: [TokenClimate methodology](https://tokenclimate.com/en/methodology);
 Lannelongue, Grealey & Inouye (2021), [Green Algorithms](https://doi.org/10.1002/advs.202100707),
