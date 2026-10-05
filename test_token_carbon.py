@@ -1,4 +1,4 @@
-"""Tests for token_carbon.py. Run with: python3 -m unittest -v"""
+"""Tests for token_carbon.py. Run with: python3 -m pytest (or python3 -m unittest -v)"""
 
 import json
 import tempfile
@@ -9,9 +9,10 @@ import token_carbon as tc
 
 
 def call(mid, session, cwd, ts="2026-09-30T10:00:00Z", model="claude-opus-5-5",
-         inp=1, cw=10, cr=100, out=5):
+         inp=1, cw=10, cr=100, out=5, branch="main"):
     return {
         "type": "assistant", "sessionId": session, "cwd": cwd, "timestamp": ts,
+        "gitBranch": branch,
         "message": {"id": mid, "model": model, "usage": {
             "input_tokens": inp, "cache_creation_input_tokens": cw,
             "cache_read_input_tokens": cr, "output_tokens": out}},
@@ -160,6 +161,74 @@ class TokenCarbonTest(unittest.TestCase):
         html = out.read_text()
         self.assertNotIn("/*DATA*/null", html)
         self.assertIn('"project": "demo"', html)
+
+    def test_branches_are_separate_records(self):
+        self.write("s1.jsonl", [call("m1", "s1", "/Users/me/code/demo", branch="main"),
+                                call("m2", "s1", "/Users/me/code/demo", branch="feature-x"),
+                                call("m3", "s1", "/Users/me/code/demo", branch="feature-x")])
+        records = tc.update_history(self.data, self.projects)
+        self.assertEqual({r["branch"] for r in records}, {"main", "feature-x"})
+        by = tc.tally(records, "branch")
+        self.assertEqual(by["feature-x"]["calls"], 2)
+        self.assertEqual(by["main"]["calls"], 1)
+        self.assertTrue(all(r["cwd"] == "/Users/me/code/demo" for r in records))
+
+    def test_until_bounds_days(self):
+        self.write("s1.jsonl", [
+            call("m1", "s1", "/Users/me/code/demo", ts="2026-09-29T10:00:00Z"),
+            call("m2", "s1", "/Users/me/code/demo", ts="2026-09-30T10:00:00Z"),
+            call("m3", "s1", "/Users/me/code/demo", ts="2026-10-01T10:00:00Z")])
+        records = tc.update_history(self.data, self.projects)
+        self.assertEqual(len(tc.select(records, until="2026-09-30")), 2)
+        self.assertEqual(len(tc.select(records, since="2026-09-30", until="2026-09-30")), 1)
+
+    def write_old_history(self, records):
+        """A history.json as the version without branches wrote it."""
+        self.data.mkdir(parents=True, exist_ok=True)
+        (self.data / "history.json").write_text(json.dumps({"version": 1, "records": records}))
+
+    def old_record(self, session, day, model, calls, cr, project="demo"):
+        return {f"{session}|{day}|{model}": {
+            "session": session, "day": day, "model": model, "project_dir": self.proj.name,
+            "project": project, "input": calls, "cache_write": 10 * calls,
+            "cache_read": cr, "output": 5 * calls, "calls": calls}}
+
+    def test_old_keys_migrate_without_double_counting(self):
+        # The transcript still exists: its counts move to their branches and
+        # the migrated "?" record is left empty.
+        self.write("s1.jsonl", [call("m1", "s1", "/Users/me/code/demo", branch="main"),
+                                call("m2", "s1", "/Users/me/code/demo", branch="feat")])
+        self.write_old_history(self.old_record("s1", "2026-09-30", "claude-opus-5-5", 2, 200))
+        records = tc.update_history(self.data, self.projects)
+        total = tc.tally(tc.select(records))["total"]
+        self.assertEqual(total["calls"], 2)
+        self.assertEqual(total["tokens"]["cache_read"], 200)
+        stored = json.loads((self.data / "history.json").read_text())["records"]
+        self.assertIn("s1|2026-09-30|claude-opus-5-5|?", stored)
+        self.assertEqual(stored["s1|2026-09-30|claude-opus-5-5|?"]["calls"], 0)
+        self.assertEqual(set(tc.tally(tc.select(records), "branch")), {"main", "feat"})
+
+    def test_migrated_record_keeps_counts_of_deleted_transcripts(self):
+        # No transcript left for s0: its old total survives under branch "?".
+        self.write("s1.jsonl", [call("m1", "s1", "/Users/me/code/demo")])
+        self.write_old_history({**self.old_record("s0", "2026-09-28", "claude-opus-5-5", 3, 300),
+                                **self.old_record("s1", "2026-09-30", "claude-opus-5-5", 1, 100)})
+        records = tc.update_history(self.data, self.projects)
+        by = tc.tally(tc.select(records), "branch")
+        self.assertEqual(by["?"]["calls"], 3)
+        self.assertEqual(by["main"]["calls"], 1)
+        # Running again changes nothing.
+        again = tc.tally(tc.select(tc.update_history(self.data, self.projects)), "branch")
+        self.assertEqual({k: v["calls"] for k, v in again.items()}, {"?": 3, "main": 1})
+
+    def test_migration_keeps_the_larger_old_total(self):
+        # A transcript that lost lines since the old history was written (the
+        # old total is larger) keeps the difference under "?".
+        self.write("s1.jsonl", [call("m1", "s1", "/Users/me/code/demo")])
+        self.write_old_history(self.old_record("s1", "2026-09-30", "claude-opus-5-5", 2, 200))
+        total = tc.tally(tc.select(tc.update_history(self.data, self.projects)))["total"]
+        self.assertEqual(total["calls"], 2)
+        self.assertEqual(total["tokens"]["cache_read"], 200)
 
 
 if __name__ == "__main__":

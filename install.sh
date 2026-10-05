@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Install claude-code-carbon-dashboard: copy the tool into ~/.claude/carbon,
+# Install claude-code-carbon-dashboard: copy the tools into ~/.claude/carbon,
 # add a Stop hook to ~/.claude/settings.json that refreshes the dashboard after
 # every turn, and build the dashboard once. Safe to re-run; it updates the copy
 # in place.
@@ -10,8 +10,10 @@ dest="${CLAUDE_CARBON_HOME:-$HOME/.claude/carbon}"
 settings="$HOME/.claude/settings.json"
 
 mkdir -p "$dest"
-cp "$repo/token_carbon.py" "$repo/dashboard_template.html" "$dest/"
-chmod +x "$dest/token_carbon.py"
+# The collectors and the report are flat modules imported as siblings of
+# token_carbon.py, so they are copied alongside it.
+cp "$repo/token_carbon.py" "$repo/dashboard_template.html" "$repo"/carbon_*.py "$dest/"
+chmod +x "$dest/token_carbon.py" "$dest/carbon_report.py"
 
 python3 - "$settings" "$dest" <<'EOF'
 import json, shutil, sys
