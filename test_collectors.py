@@ -1,6 +1,8 @@
 """Tests for the collectors and the report. Run with: python3 -m pytest"""
 
+import contextlib
 import datetime
+import io
 import json
 import tempfile
 import unittest
@@ -411,6 +413,41 @@ class LedgerAndReportTest(unittest.TestCase):
                                 "--summary", str(summary)])
             s = json.loads(summary.read_text())
             self.assertEqual(s["by_class"]["science"]["n"], 2)
+
+    def test_sessions_file_classifies_claude_sessions(self):
+        with tempfile.TemporaryDirectory() as d:
+            ids = Path(d) / "ids.txt"
+            ids.write_text("# secret-note\n\nsecret-sess  # why\n")
+            rec = {"day": "2026-10-01", "model": "claude-opus-5-5", "branch": "feat", "cwd": "/x",
+                   "input": 0, "cache_write": 0, "cache_read": 0, "output": 1000, "calls": 1}
+            claude = {f"{n}|2026-10-01|claude-opus-5-5|feat": dict(rec, session=n)
+                      for n in ("secret-sess", "other")}
+            classes = {"science": {"sessions_file": str(ids)}}
+            got = {i["id"].split("|")[0]: i["class"] for i in carbon_report.claude_items(claude, classes)}
+            self.assertEqual(got, {"secret-sess": "science", "other": "dev"})
+            self.assertEqual(carbon_report.session_classes(classes), {"secret-sess": "science"})
+            # A listed session beats its branch class.
+            classes["validation"] = {"branches": ["feat"]}
+            got = {i["id"].split("|")[0]: i["class"] for i in carbon_report.claude_items(claude, classes)}
+            self.assertEqual(got, {"secret-sess": "science", "other": "validation"})
+            # A missing file only warns.
+            with contextlib.redirect_stderr(io.StringIO()) as err:
+                missing = {"science": {"sessions_file": str(Path(d) / "none.txt")}}
+                self.assertEqual(carbon_report.session_classes(missing), {})
+            self.assertIn("warning", err.getvalue())
+            # Nothing listed reaches the outputs.
+            ledger, summary, md = Path(d) / "l.json", Path(d) / "s.json", Path(d) / "p.md"
+            cc.update_ledger(ledger, {"claude": claude})
+            cfg = Path(d) / "c.json"
+            cfg.write_text(json.dumps({"repo": "me/demo", "hide_excluded": True,
+                                       "classes": {"science": {"sessions_file": str(ids)}}}))
+            carbon_report.main(["--config", str(cfg), "--ledger", str(ledger), "--offline",
+                                "--summary", str(summary), "--markdown", str(md)])
+            for out in (summary, md):
+                text = out.read_text()
+                for secret in ("secret-sess", "secret-note", "why"):
+                    self.assertNotIn(secret, text)
+            self.assertEqual(json.loads(summary.read_text())["by_class"]["science"]["n"], 1)
 
     def test_report_from_ledger(self):
         with tempfile.TemporaryDirectory() as d:

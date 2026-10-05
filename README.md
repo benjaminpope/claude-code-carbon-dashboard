@@ -217,6 +217,7 @@ exclude = ["gpu-test"]
 jobs = ["analysis_*"]
 dirs = ["*/analysis/*"]
 branches = ["analysis-*"]
+sessions_file = "~/notes/science-sessions.txt"  # Claude session ids, one per line
 
 [classes.validation]                # counted, shown as validation
 jobs = ["sbc*"]
@@ -228,6 +229,11 @@ jobs = ["sbc*"]
 [params.slurm]                      # override any module PARAMS entry
 pue = 1.4
 ```
+
+`sessions_file` names a plain-text file with one Claude session id per line;
+`#` starts a comment and blank lines are ignored. A listed session takes that
+class whatever its branch. A missing file only warns. The ids and comments are
+never written to any output.
 
 Unclassified items count as development. Items are attributed to features
 through pull requests: by branch (`gh pr list`), by the commit a job pinned

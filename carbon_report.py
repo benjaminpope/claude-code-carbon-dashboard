@@ -140,8 +140,32 @@ def sha_prs(slug, shas, known):
     return out
 
 
+def session_classes(classes):
+    """{session id: class} from each class's sessions_file (one id per line).
+
+    A '#' starts a comment and blank lines are ignored. A missing file only
+    warns. The ids are never written to any output.
+    """
+    out = {}
+    for cls in sorted(classes, key=lambda c: (c != "science", c != "validation"), reverse=True):
+        path = classes[cls].get("sessions_file")
+        if not path:
+            continue
+        try:
+            text = Path(path).expanduser().read_text()
+        except OSError:
+            print(f"warning: sessions_file for class '{cls}' not readable; ignored", file=sys.stderr)
+            continue
+        for line in text.splitlines():
+            sid = line.split("#", 1)[0].strip()
+            if sid:
+                out[sid] = cls
+    return out
+
+
 def claude_items(records, classes):
     items = []
+    listed = session_classes(classes)
     for key, r in records.items():
         family = tc.model_family(r["model"])
         tokens = {t: r.get(t, 0) for t in tc.TYPES}
@@ -155,7 +179,8 @@ def claude_items(records, classes):
         items.append({
             "source": "claude", "id": key, "day": r["day"], "label": tc.FAMILIES[family]["label"],
             "kind": "model calls", "branch": r.get("branch"), "pr": None,
-            "class": cc.classify(classes, branch=r.get("branch"), dir=r.get("cwd")),
+            "class": listed.get(r.get("session")) or cc.classify(
+                classes, branch=r.get("branch"), dir=r.get("cwd")),
             "tokens": tokens, "kg_by_type": by_type, "calls": r.get("calls", 0),
             "kwh": kwh, "kg": kg,
         })
