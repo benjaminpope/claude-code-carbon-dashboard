@@ -4,12 +4,14 @@ import contextlib
 import datetime
 import io
 import json
+import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
 
 import carbon_common as cc
 import carbon_copilot
+import carbon_gemini
 import carbon_gha
 import carbon_report
 import carbon_slurm
@@ -145,6 +147,138 @@ class VSCodeTest(unittest.TestCase):
         self.assertEqual(x["kwh"][0], 0.0)
         wh = (1000 * 238 + 1000 * 238 * 0.08 + 10 * 5050) / 1e6
         self.assertAlmostEqual(items["r1"]["kwh"][1], wh * 1.14 / 1000)
+
+
+def pb_varint(n):
+    out = bytearray()
+    while True:
+        out.append((n & 0x7F) | (0x80 if n > 0x7F else 0))
+        n >>= 7
+        if not n:
+            return bytes(out)
+
+
+def pb(*fields):
+    """A protobuf message from (field, value) pairs: ints, str/bytes, or nested tuples."""
+    out = b""
+    for f, v in fields:
+        if isinstance(v, int):
+            out += pb_varint(f << 3) + pb_varint(v)
+        else:
+            v = pb(*v) if isinstance(v, tuple) else v.encode() if isinstance(v, str) else v
+            out += pb_varint(f << 3 | 2) + pb_varint(len(v)) + v
+    return out
+
+
+def gen_blob(model, rid, step_key, inp, out, cached=None, thinking=0):
+    usage = [(1, 7), (2, inp), (3, out), (9, out - thinking), (10, thinking), (11, rid)]
+    if cached is not None:
+        usage.append((5, cached))
+    return pb((1, ((4, tuple(usage)), (9, ((10, ((1, inp + out), (4, 256000))),)),
+                   (19, model))), (4, step_key))
+
+
+class GeminiTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.code = self.root / "code"
+        (self.code / "demo").mkdir(parents=True)
+        (self.root / "scratch").mkdir()
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def antigravity(self, name, convs):
+        """A fake Antigravity root; convs is {id: (summary dict, [gen blobs], {step key: ts})}."""
+        root = self.root / name
+        (root / "conversations").mkdir(parents=True)
+        con = sqlite3.connect(root / "conversation_summaries.db")
+        con.execute("create table conversation_summaries (conversation_id text, title text, "
+                    "workspace_uris text, parent_conversation_id text, last_modified_time text)")
+        for cid, (s, blobs, steps) in convs.items():
+            con.execute("insert into conversation_summaries values (?, ?, ?, ?, ?)",
+                        (cid, s.get("title", ""), json.dumps(s.get("ws", [])),
+                         s.get("parent", ""), "2026-10-28 04:34:00.2+00:00"))
+            c = sqlite3.connect(root / "conversations" / f"{cid}.db")
+            c.execute("create table steps (idx integer, metadata blob)")
+            c.execute("create table gen_metadata (idx integer, data blob, size integer)")
+            for i, (k, ts) in enumerate(steps.items()):
+                c.execute("insert into steps values (?, ?)", (i, pb((1, ((1, ts),)), (12, k))))
+            for i, b in enumerate(blobs):
+                c.execute("insert into gen_metadata values (?, ?, ?)", (i, b, len(b)))
+            c.commit()
+            c.close()
+        con.commit()
+        con.close()
+        return root
+
+    def test_wire_format(self):
+        b = pb((1, ((19, "m"), (4, ((2, 300),)))), (4, "k"))
+        self.assertEqual(carbon_gemini.get(b, 1, 4, 2), 300)
+        self.assertEqual(carbon_gemini.get(b, 1, 19), b"m")
+        self.assertIsNone(carbon_gemini.get(b, 1, 7))
+
+    def test_collect_reads_tokens_and_attributes_projects(self):
+        ts = 1793161425  # 2026-10-28 UTC
+        app = self.antigravity("app", {
+            "rev": ({"title": "Argon Review: me/demo#12", "ws": [(self.root / "scratch").as_uri()]},
+                    [gen_blob("gemini-4-argon", "r1", "k1", 1000, 300, thinking=100),
+                     gen_blob("gemini-4-argon", "r2", "k2", 200, 50, cached=1300)],
+                    {"k1": ts, "k2": ts + 86400}),
+            "par": ({"ws": [(self.code / "demo").as_uri()]},
+                    [gen_blob("gemini-3.8-flash-tiered", "r3", "k3", 10, 1)], {"k3": ts}),
+            "sub": ({"parent": "par", "ws": [(self.root / "gone" / "wt").as_uri()]},
+                    [gen_blob("gemini-4-argon", "r4", "kx", 10, 1)], {}),
+            "scr": ({"ws": [(self.root / "scratch").as_uri()]},
+                    [gen_blob("gemini-4-argon", "r5", "k5", 10, 1)], {"k5": ts}),
+            "lone": ({}, [gen_blob("gemini-4-argon", "r6", "k6", 10, 1)], {"k6": ts}),
+        })
+        cli = self.antigravity("cli", {
+            "rev": ({"title": "Argon Review: me/demo#12"},
+                    [gen_blob("gemini-4-argon", "r1", "k1", 1000, 300, thinking=100)], {"k1": ts})})
+        recs = carbon_gemini.collect([app, cli], self.code)["gemini"]
+        self.assertEqual(set(recs), {"r1", "r2", "r3", "r4", "r5", "r6"})
+        r1, r2 = recs["r1"], recs["r2"]
+        self.assertEqual((r1["input"], r1["cache_read"], r1["output"], r1["thinking"]),
+                         (1000, 0, 300, 100))
+        self.assertEqual((r2["input"], r2["cache_read"], r2["output"]), (200, 1300, 50))
+        self.assertEqual((r1["day"], r2["day"]), ("2026-10-28", "2026-10-29"))
+        self.assertEqual((r1["project"], r1["pr"], r1["model"]), ("me/demo", 12, "gemini-4-argon"))
+        self.assertEqual(recs["r3"]["project"], "demo")          # folder under code_dir
+        self.assertEqual(recs["r4"]["project"], "demo")          # deleted worktree: parent's
+        self.assertEqual(recs["r4"]["day"], "2026-10-28")        # no step: summary time
+        self.assertEqual(recs["r5"]["project"], str(self.root / "scratch"))
+        self.assertEqual(recs["r6"]["project"], carbon_gemini.UNATTRIBUTED)
+
+    def test_model_classes(self):
+        self.assertEqual(carbon_gemini.model_class("gemini-4-argon")[0], ("sonnet", "opus", "opus"))
+        self.assertEqual(carbon_gemini.model_class("gemini-3.8-flash-low")[0],
+                         ("haiku", "haiku", "sonnet"))
+        self.assertEqual(carbon_gemini.model_class("gemini-9-new")[0][1], "opus")
+
+    def test_call_energy_by_hand_and_classes(self):
+        rec = {"model": "gemini-4-argon", "input": 1000, "cache_read": 10000, "output": 300,
+               "ts": 0, "day": "2026-10-28", "pr": 12}
+        classes = {"science": {"dirs": ["*apep*"]}, "validation": {"dirs": ["*validation*"]}}
+        recs = {"a": dict(rec, project="me/demo"), "b": dict(rec, project="me/demo-validation"),
+                "c": dict(rec, project="me/demo-apep"), "d": dict(rec, project="/x/scratch"),
+                "e": dict(rec, project="unattributed")}
+        items = {i["id"]: i for i in carbon_gemini.cost(recs, classes, ["demo*"], "me/demo")}
+        self.assertEqual({k: i["class"] for k, i in items.items()},
+                         {"a": "dev", "b": "validation", "c": "science", "d": "other",
+                          "e": "unattributed"})
+        self.assertEqual((items["a"]["pr"], items["b"]["pr"]), (12, None))
+        a = items["a"]
+        # Mid, Opus: 1000 x 238 + 10000 x 238 x 0.08 + 300 x 5050 Wh per million.
+        mid = (1000 * 238 + 10000 * 238 * 0.08 + 300 * 5050) / 1e6
+        self.assertAlmostEqual(a["kwh"][1], mid * 1.14 / 1000)
+        self.assertAlmostEqual(a["kg"][1], mid * tc.CO2_G_PER_WH / 1000)
+        # Low: Sonnet, cache reads at 0.05; high: Opus, cache reads at 0.20.
+        lo = (1000 * 119 + 10000 * 119 * 0.05 + 300 * 2525) / 1e6
+        hi = (1000 * 238 + 10000 * 238 * 0.20 + 300 * 5050) / 1e6
+        self.assertAlmostEqual(a["kwh"][0], lo * 1.14 / 1000)
+        self.assertAlmostEqual(a["kwh"][2], hi * 1.14 / 1000)
 
 
 class SlurmTest(unittest.TestCase):
@@ -448,6 +582,28 @@ class LedgerAndReportTest(unittest.TestCase):
                 for secret in ("secret-sess", "secret-note", "why"):
                     self.assertNotIn(secret, text)
             self.assertEqual(json.loads(summary.read_text())["by_class"]["science"]["n"], 1)
+
+    def test_gemini_projects_outside_scope_stay_out_of_total(self):
+        rec = {"model": "gemini-4-argon", "input": 0, "cache_read": 0, "output": 1_000_000,
+               "ts": 0, "day": "2026-10-28", "conversation": "c", "pr": 9}
+        with tempfile.TemporaryDirectory() as d:
+            ledger = Path(d) / "ledger.json"
+            cc.update_ledger(ledger, {
+                "gemini": {"a": dict(rec, project="me/demo"), "b": dict(rec, project="me/web"),
+                           "c": dict(rec, project="unattributed")},
+                "prs": {"9": {"number": 9, "title": "Add a feature", "branch": "feat",
+                              "created": "2026-09-29"}}})
+            cfg_path = Path(d) / "c.json"
+            cfg_path.write_text(json.dumps({"repo": "me/demo", "gemini": {"projects": ["demo"]}}))
+            summary = Path(d) / "s.json"
+            carbon_report.main(["--config", str(cfg_path), "--ledger", str(ledger), "--offline",
+                                "--summary", str(summary)])
+            s = json.loads(summary.read_text())
+            self.assertAlmostEqual(s["total"]["kg"][1], 5050 * tc.CO2_G_PER_WH / 1000)
+            self.assertEqual(list(s["by_source"]), ["gemini"])
+            self.assertEqual(list(s["by_feature"]), ["#9 Add a feature"])
+            self.assertEqual({k: v["n"] for k, v in s["by_class"].items()},
+                             {"dev": 1, "other": 1, "unattributed": 1})
 
     def test_report_from_ledger(self):
         with tempfile.TemporaryDirectory() as d:
