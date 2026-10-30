@@ -251,6 +251,18 @@ class GeminiTest(unittest.TestCase):
         self.assertEqual(recs["r5"]["project"], str(self.root / "scratch"))
         self.assertEqual(recs["r6"]["project"], carbon_gemini.UNATTRIBUTED)
 
+    def test_malformed_blobs_and_zero_time(self):
+        self.assertIsNone(carbon_gemini.get(pb((1, 5)), 1, 4))   # an int where a message is expected
+        zero = {"last_modified_time": "0001-01-01 00:00:00+00:00"}
+        self.assertEqual(carbon_gemini.summary_ts(zero), 0)
+        truncated = b"\x08\x80"                                  # a varint cut short
+        app = self.antigravity("app", {"c": (
+            {}, [truncated, gen_blob("gemini-4-argon", "r1", "k", 10, 1)], {})})
+        with contextlib.redirect_stderr(io.StringIO()) as err:
+            recs = carbon_gemini.collect([app], self.code)["gemini"]
+        self.assertEqual(set(recs), {"r1"})
+        self.assertIn("skipped 1 malformed", err.getvalue())
+
     def test_model_classes(self):
         self.assertEqual(carbon_gemini.model_class("gemini-4-argon")[0], ("sonnet", "opus", "opus"))
         self.assertEqual(carbon_gemini.model_class("gemini-3.8-flash-low")[0],
@@ -269,6 +281,8 @@ class GeminiTest(unittest.TestCase):
                          {"a": "dev", "b": "validation", "c": "science", "d": "other",
                           "e": "unattributed"})
         self.assertEqual((items["a"]["pr"], items["b"]["pr"]), (12, None))
+        self.assertEqual((items["a"]["feature_hint"], items["b"]["feature_hint"]),
+                         (None, "Gemini: demo-validation PR reviews"))
         a = items["a"]
         # Mid, Opus: 1000 x 238 + 10000 x 238 x 0.08 + 300 x 5050 Wh per million.
         mid = (1000 * 238 + 10000 * 238 * 0.08 + 300 * 5050) / 1e6
@@ -590,7 +604,8 @@ class LedgerAndReportTest(unittest.TestCase):
             ledger = Path(d) / "ledger.json"
             cc.update_ledger(ledger, {
                 "gemini": {"a": dict(rec, project="me/demo"), "b": dict(rec, project="me/web"),
-                           "c": dict(rec, project="unattributed")},
+                           "c": dict(rec, project="unattributed"),
+                           "d": dict(rec, project="me/demo", pr=None)},
                 "prs": {"9": {"number": 9, "title": "Add a feature", "branch": "feat",
                               "created": "2026-09-29"}}})
             cfg_path = Path(d) / "c.json"
@@ -599,11 +614,12 @@ class LedgerAndReportTest(unittest.TestCase):
             carbon_report.main(["--config", str(cfg_path), "--ledger", str(ledger), "--offline",
                                 "--summary", str(summary)])
             s = json.loads(summary.read_text())
-            self.assertAlmostEqual(s["total"]["kg"][1], 5050 * tc.CO2_G_PER_WH / 1000)
+            self.assertAlmostEqual(s["total"]["kg"][1], 2 * 5050 * tc.CO2_G_PER_WH / 1000)
             self.assertEqual(list(s["by_source"]), ["gemini"])
-            self.assertEqual(list(s["by_feature"]), ["#9 Add a feature"])
+            self.assertEqual(list(s["by_feature"]),
+                             ["#9 Add a feature", "Gemini: demo audits and other work"])
             self.assertEqual({k: v["n"] for k, v in s["by_class"].items()},
-                             {"dev": 1, "other": 1, "unattributed": 1})
+                             {"dev": 2, "other": 1, "unattributed": 1})
 
     def test_report_from_ledger(self):
         with tempfile.TemporaryDirectory() as d:

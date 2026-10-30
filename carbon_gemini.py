@@ -99,8 +99,10 @@ def fields(b):
 
 
 def get(b, *path):
-    """The first value at a field path, or None."""
+    """The first value at a field path, or None (also where a step is not a message)."""
     for p in path:
+        if not isinstance(b, bytes):
+            return None
         b = next((v for f, v in fields(b) if f == p), None)
         if b is None:
             return None
@@ -116,10 +118,10 @@ def call_record(data, conversation, root, step_ts, fallback_ts):
     u = dict(fields(usage))
     key = get(data, 4)
     ts = step_ts.get(key, fallback_ts)
-    model = get(call, 19)
+    model, rid = get(call, 19), u.get(11)
     return {
         "conversation": conversation, "root": root,
-        "response": u.get(11, b"").decode(errors="replace"),
+        "response": rid.decode(errors="replace") if isinstance(rid, bytes) else "",
         "ts": ts, "day": datetime.fromtimestamp(ts, timezone.utc).date().isoformat(),
         "model": model.decode(errors="replace") if isinstance(model, bytes) else "unknown",
         "input": u.get(2, 0), "cache_read": u.get(5, 0), "output": u.get(3, 0),
@@ -194,11 +196,13 @@ def project_of(cid, summ, code_dir=CODE_DIR, _seen=None):
 
 
 def summary_ts(s):
+    """Epoch seconds of last_modified_time, or 0 if absent, unparsable or Go's zero time."""
     t = s.get("last_modified_time")
     try:
-        return datetime.fromisoformat(t).timestamp() if t else 0
-    except ValueError:
+        ts = datetime.fromisoformat(t).timestamp() if t else 0
+    except (ValueError, OverflowError, OSError):
         return 0
+    return ts if ts > 0 else 0
 
 
 def collect(roots=ROOTS, code_dir=CODE_DIR):
@@ -224,8 +228,11 @@ def collect(roots=ROOTS, code_dir=CODE_DIR):
             try:
                 step_ts = {}
                 for (md,) in con.execute("select metadata from steps where metadata is not null"):
-                    k, t = get(md, 12), get(md, 1, 1)
-                    if k is not None and t is not None:
+                    try:
+                        k, t = get(md, 12), get(md, 1, 1)
+                    except (ValueError, IndexError):  # a malformed blob: skip that step
+                        continue
+                    if isinstance(k, bytes) and isinstance(t, int):
                         step_ts[k] = t
                 rows = con.execute("select idx, data from gen_metadata").fetchall()
             except sqlite3.Error as e:
@@ -234,12 +241,19 @@ def collect(roots=ROOTS, code_dir=CODE_DIR):
             finally:
                 con.close()
             fallback = summary_ts(summ.get(cid, {})) or db.stat().st_mtime
+            bad = 0
             for idx, data in rows:
-                r = call_record(data, cid, Path(root).name, step_ts, fallback)
+                try:
+                    r = call_record(data, cid, Path(root).name, step_ts, fallback)
+                except (ValueError, IndexError, TypeError):
+                    bad += 1
+                    continue
                 if r is None:
                     continue
                 r.update(project=project, pr=pr)
                 records[r["response"] or f"{cid}:{idx}"] = r
+            if bad:
+                cc.warn(f"{db.name}: skipped {bad} malformed gen_metadata rows")
     return {"gemini": records}
 
 
@@ -271,14 +285,19 @@ def cost(records, classes=None, include=(), repo=None, params=PARAMS):
     items = []
     for rid, r in sorted(records.items(), key=lambda kv: kv[1]["ts"]):
         fams, _ = model_class(r["model"])
+        project = r.get("project", UNATTRIBUTED)
+        pr = r.get("pr") if repo and project == repo else None
+        name = project.rsplit("/", 1)[-1]
         tokens = {"input": r["input"], "cache_read": r["cache_read"], "output": r["output"]}
         e = [cc.llm_cost(f, tokens, cache_read_scale=s)
              for f, s in zip(fams, params["cache_read_scale"])]
         items.append({
             "source": "gemini", "id": rid, "day": r["day"], "label": r["model"],
             "kind": "model calls", "branch": None,
-            "pr": r.get("pr") if repo and r.get("project") == repo else None,
-            "class": project_class(r.get("project", UNATTRIBUTED), classes or {}, include),
+            "pr": pr, "class": project_class(project, classes or {}, include),
+            # Feature when there is no PR of this repository to attribute it to.
+            "feature_hint": None if pr else f"Gemini: {name} PR reviews" if r.get("pr")
+            else f"Gemini: {name} audits and other work",
             "tokens": tokens, "calls": 1,
             "kwh": cc.triple(*(x[0] for x in e)), "kg": cc.triple(*(x[1] for x in e)),
         })

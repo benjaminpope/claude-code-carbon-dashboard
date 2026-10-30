@@ -268,7 +268,8 @@ def attribute(items, cfg, ledger, offline=False):
                 i["class"] = branch_class
         if label is None:
             p = prs.get(str(pr)) if pr is not None else None
-            label = f"#{pr} {p['title']}" if p else f"#{pr}" if pr is not None else UNATTRIBUTED
+            label = f"#{pr} {p['title']}" if p else f"#{pr}" if pr is not None else (
+                i.get("feature_hint") or UNATTRIBUTED)
         i["feature"] = label
     return items
 
@@ -506,7 +507,9 @@ def markdown(summary, cfg, top=15):
     feats = list(s["by_feature"].items())
     lines += [f"## By feature (top {min(top, len(feats))} of {len(feats)})", "",
               "Each item is attributed to a pull request through its branch, the commit a job "
-              "pinned, or the PR a Copilot run served, and labelled with the PR title.", "",
+              "pinned, the PR a Copilot run served, or the PR a Gemini review names, and labelled "
+              "with the PR title. Gemini work with no PR in this repository (audits, reviews of "
+              "other repositories) is labelled by its project.", "",
               table(["Feature", "Items", "kg CO₂e", "kg range"],
                     [[feature_link(k, s["prs"].get(k), slug), g["n"], fmt(g["kg"][1]), rng(g["kg"])]
                      for k, g in feats[:top]]), ""]
