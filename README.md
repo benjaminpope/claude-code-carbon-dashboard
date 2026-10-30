@@ -143,6 +143,7 @@ module:
 |---|---|---|---|
 | `token_carbon.py` | Claude Code | tokens by type, from transcripts | TokenClimate |
 | `carbon_vscode.py` | VS Code Copilot Chat | prompt and output tokens per request, from chat session logs | TokenClimate, by assumed model class |
+| `carbon_gemini.py` | Gemini in Google Antigravity (app and CLI) | input, cached-read and output tokens per model call, from local conversation databases | TokenClimate, by assumed model class |
 | `carbon_copilot.py` | Copilot cloud agent and code review | run time of their Actions runs; billed AI Credits and premium requests | TokenClimate Sonnet factors |
 | `carbon_gha.py` | GitHub Actions CI | runner time per job | Green Algorithms |
 | `carbon_slurm.py` | Slurm jobs (OzSTAR/NT) | sacct allocation and run time; NT Job Report usage; `submissions.tsv` | Green Algorithms |
@@ -174,7 +175,7 @@ needs no re-fetch.
 permanent copy in a repository, `--archive PATH` compacts the records whose
 source has expired, or is about to (Claude transcripts after 25 days, sacct
 jobs after 150, GitHub runs and billing after 85, VS Code requests whose
-session file is gone), into rows summed by day, source, model or workflow,
+session file is gone, Gemini calls whose conversation database is gone), into rows summed by day, source, model or workflow,
 kind, class and feature. Rows keep a PR number but not its title, and are
 max-merged, so totals never drop. A source's day that has any archived row
 is then reported from the archive only, and the rest from the ledger, so
@@ -200,6 +201,10 @@ projects = ["name"]                 # substrings of project name, folder or cwd
 [vscode]
 folders = ["~/code/name"]           # workspaces at or under these paths
 storage = "~/Library/Application Support/Code/User"   # optional
+
+[gemini]
+projects = ["name"]                 # repository names or owner/name globs that count
+roots = ["~/.gemini/antigravity", "~/.gemini/antigravity-cli"]   # optional
 
 [gha]
 enabled = true                      # any source can be switched off
@@ -253,6 +258,21 @@ PR a Copilot run served, and labelled with the PR title. Work on `main` is
   uncached input (`cached_fraction` sets a cached share); the high value
   counts the prompt of every model call in an agent request. Older requests
   without counts take the median of counted ones.
+- *Gemini (Antigravity).* Each conversation database has one protobuf per
+  model call (`gen_metadata`), read with a small wire-format reader: model
+  id, uncached input, cached-read input and output tokens (thinking tokens
+  are part of output), and a response id for deduplication across the app
+  and CLI roots. The day comes from the matching step's timestamp. A
+  conversation's project is the repository in its title (the `argon-review`
+  script's "Argon Review: owner/repo#N" and "Argon Adversarial Audit:
+  owner/repo"), else its workspace folder's git repository, else its parent
+  conversation's. Every call is kept in the ledger; calls for projects not
+  in `projects` are costed as class `other`, those with no project as
+  `unattributed`, and neither counts in the headline. Science `dirs` globs
+  are matched against the project. Gemini 4 Argon is assumed Opus class and
+  Flash models Haiku class, with cache reads costed as for Claude. Google's
+  0.24 Wh per median Gemini Apps text prompt (Elsworth et al. 2025,
+  arXiv:2508.15734) is a cross-check only.
 - *Copilot cloud.* AI Credits are token-metered, so they are converted to
   tokens at the credits-per-token rate measured on the local chat logs. Local
   chat credits are subtracted (VS Code counts them), and account-wide rows

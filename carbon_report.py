@@ -2,8 +2,9 @@
 """Development carbon for one repository, from every source, as a markdown page.
 
 Collects Claude Code (token_carbon's history), VS Code Copilot Chat
-(carbon_vscode), Copilot's cloud agent and code review (carbon_copilot),
-GitHub Actions CI (carbon_gha) and Slurm jobs (carbon_slurm); max-merges the
+(carbon_vscode), Gemini in Google Antigravity (carbon_gemini), Copilot's
+cloud agent and code review (carbon_copilot), GitHub Actions CI (carbon_gha)
+and Slurm jobs (carbon_slurm); max-merges the
 raw records into a JSON ledger so nothing is lost when transcripts, chat logs
 or sacct records expire; costs them; attributes them to features through
 PRs; and writes a markdown page fragment, a JSON summary and badge text.
@@ -29,13 +30,15 @@ from urllib.parse import quote
 
 import carbon_common as cc
 import carbon_copilot
+import carbon_gemini
 import carbon_gha
 import carbon_slurm
 import carbon_vscode
 import token_carbon as tc
 
-SOURCES = ("claude", "vscode", "copilot", "gha", "slurm")
+SOURCES = ("claude", "vscode", "gemini", "copilot", "gha", "slurm")
 SOURCE_LABELS = {"claude": "Claude Code", "vscode_copilot": "VS Code Copilot Chat",
+                 "gemini": "Gemini (Antigravity)",
                  "copilot": "Copilot cloud agent and review", "gha": "GitHub Actions CI",
                  "slurm": "OzSTAR/NT Slurm jobs"}
 HEADLINE_CLASSES = ("dev", "validation")
@@ -87,6 +90,8 @@ def collect(cfg, ledger_path, only=SOURCES):
     attempt("vscode", lambda: carbon_vscode.collect(
         cfg.get("vscode", {}).get("folders", []),
         cfg.get("vscode", {}).get("storage", carbon_vscode.STORAGE)))
+    attempt("gemini", lambda: carbon_gemini.collect(
+        [Path(r).expanduser() for r in cfg.get("gemini", {}).get("roots", carbon_gemini.ROOTS)]))
     attempt("copilot", lambda: carbon_copilot.collect(
         slug, cfg.get("github_user", slug.split("/")[0]), known))
     attempt("gha", lambda: {"gha": carbon_gha.collect(slug, known.get("gha"))})
@@ -201,6 +206,9 @@ def cost_all(cfg, ledger):
         i["class"] = max((cc.classify(classes, dir=f) for f in r.get("folders", [])),
                          key=lambda c: c == "science", default="dev")
     items += vs
+    gem = cfg.get("gemini", {})
+    items += carbon_gemini.cost(src.get("gemini", {}), classes, gem.get("projects", []), slug,
+                                with_overrides(carbon_gemini.PARAMS, params.get("gemini")))
     gha_params = with_overrides(carbon_gha.PARAMS, params.get("gha"))
     # Copilot runs are costed by carbon_copilot; a ledger from before the gha
     # collector skipped them may still hold them.
@@ -260,7 +268,8 @@ def attribute(items, cfg, ledger, offline=False):
                 i["class"] = branch_class
         if label is None:
             p = prs.get(str(pr)) if pr is not None else None
-            label = f"#{pr} {p['title']}" if p else f"#{pr}" if pr is not None else UNATTRIBUTED
+            label = f"#{pr} {p['title']}" if p else f"#{pr}" if pr is not None else (
+                i.get("feature_hint") or UNATTRIBUTED)
         i["feature"] = label
     return items
 
@@ -268,7 +277,8 @@ def attribute(items, cfg, ledger, offline=False):
 # Days after which a source's raw records are gone, or about to be: Claude
 # Code deletes transcripts after 30 days, NT's sacct keeps about six months,
 # and GitHub keeps Actions runs and usage reports for about 90 days. A VS Code
-# chat record expires when its session file is deleted. Config:
+# chat or Gemini record expires when its session file or conversation DB is
+# deleted. Config:
 # [retention_days].
 RETENTION_DAYS = {"claude": 25, "slurm": 150, "gha": 85, "copilot": 85}
 ARCHIVE_VERSION = 1
@@ -293,6 +303,11 @@ def expired(i, ledger, cfg, today):
         session = (storage.expanduser() / "workspaceStorage" / r.get("workspace", "?")
                    / "chatSessions" / f"{r.get('session', '?')}.jsonl")
         return not session.exists()
+    if i["source"] == "gemini":
+        r = ledger["sources"].get("gemini", {}).get(i["id"], {})
+        roots = cfg.get("gemini", {}).get("roots", carbon_gemini.ROOTS)
+        return not any((Path(root).expanduser() / "conversations"
+                        / f"{r.get('conversation', '?')}.db").exists() for root in roots)
     days = {**RETENTION_DAYS, **cfg.get("retention_days", {})}.get(i["source"])
     if days is None or not i["day"]:
         return False
@@ -483,7 +498,7 @@ def markdown(summary, cfg, top=15):
                         [[k.replace("_", " "), f"{v['tokens']:,}", fmt(v["kg"])] for k, v in tt.items()]),
                   ""]
     models = [(k.split("|", 1), g) for k, g in s["by_label"].items()
-              if k.split("|", 1)[0] in ("claude", "vscode_copilot", "gha")]
+              if k.split("|", 1)[0] in ("claude", "vscode_copilot", "gemini", "gha")]
     if models:
         lines += ["By model or workflow:", "",
                   table(["Source", "Model or workflow", "Items", "kg CO₂e", "kg range"],
@@ -492,7 +507,9 @@ def markdown(summary, cfg, top=15):
     feats = list(s["by_feature"].items())
     lines += [f"## By feature (top {min(top, len(feats))} of {len(feats)})", "",
               "Each item is attributed to a pull request through its branch, the commit a job "
-              "pinned, or the PR a Copilot run served, and labelled with the PR title.", "",
+              "pinned, the PR a Copilot run served, or the PR a Gemini review names, and labelled "
+              "with the PR title. Gemini work with no PR in this repository (audits, reviews of "
+              "other repositories) is labelled by its project.", "",
               table(["Feature", "Items", "kg CO₂e", "kg range"],
                     [[feature_link(k, s["prs"].get(k), slug), g["n"], fmt(g["kg"][1]), rng(g["kg"])]
                      for k, g in feats[:top]]), ""]
@@ -539,6 +556,12 @@ def methodology(s, cfg):
              "GPT and other non-Claude models placed in a Claude size class by assumption; "
              "prompts costed as uncached input; the high value counts every model call's prompt; "
              "requests without counts take the median of counted ones"],
+            ["Gemini (Antigravity)",
+             "Uncached input, cached-read input and output tokens per model call from local "
+             "conversation databases", "TokenClimate factors for an assumed model class",
+             "Gemini 4 Argon placed in the Opus class and Flash models in the Haiku class by "
+             "assumption; cache reads as for Claude; only the configured projects count. "
+             "Cross-check: Google's 0.24 Wh per median Gemini Apps text prompt (Elsworth et al. 2025)"],
             ["Copilot cloud agent and review", "Workflow run time; billed AI Credits and premium requests",
              "Tokens from credits (or run time) on TokenClimate Sonnet factors",
              f"{fmt(cal['credits_per_mtok'])} credits per million tokens, measured on local chat "
@@ -563,6 +586,8 @@ def methodology(s, cfg):
         "https://doi.org/10.1002/advs.202100707",
         "- DCCEEW (2026), *Australian National Greenhouse Accounts Factors*, Table 1, "
         "https://www.dcceew.gov.au/climate-change/publications/national-greenhouse-accounts-factors",
+        "- Elsworth, C. et al. (2025), Measuring the environmental impact of delivering AI at "
+        "Google scale, https://arxiv.org/abs/2508.15734",
         "- US EPA, eGRID2022 (US average grid intensity, for GitHub-hosted runners)",
         "",
     ]
