@@ -558,7 +558,7 @@ def methodology(s, cfg):
              "conversation databases", "TokenClimate factors for an assumed model class",
              "Gemini 4 Argon placed in the Opus class and Flash models in the Haiku class by "
              "assumption; cache reads as for Claude; only the configured projects count. "
-             "Cross-check: Google's 0.24 Wh per median Gemini Apps text prompt (Elsey et al. 2025)"],
+             "Cross-check: Google's 0.24 Wh per median Gemini Apps text prompt (Elsworth et al. 2025)"],
             ["Copilot cloud agent and review", "Workflow run time; billed AI Credits and premium requests",
              "Tokens from credits (or run time) on TokenClimate Sonnet factors",
              f"{fmt(cal['credits_per_mtok'])} credits per million tokens, measured on local chat "
@@ -583,7 +583,7 @@ def methodology(s, cfg):
         "https://doi.org/10.1002/advs.202100707",
         "- DCCEEW (2026), *Australian National Greenhouse Accounts Factors*, Table 1, "
         "https://www.dcceew.gov.au/climate-change/publications/national-greenhouse-accounts-factors",
-        "- Elsey, C. et al. (2025), Measuring the environmental impact of delivering AI at "
+        "- Elsworth, C. et al. (2025), Measuring the environmental impact of delivering AI at "
         "Google scale, https://arxiv.org/abs/2508.15734",
         "- US EPA, eGRID2022 (US average grid intensity, for GitHub-hosted runners)",
         "",

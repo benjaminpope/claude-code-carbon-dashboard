@@ -29,7 +29,7 @@ parent conversation's project (a deleted subagent worktree); else
 "unattributed".
 
 Google publishes no per-token energy. Its per-prompt figure, 0.24 Wh for
-the median Gemini Apps text prompt (Elsey et al. 2025, arXiv:2508.15734),
+the median Gemini Apps text prompt (Elsworth et al. 2025, arXiv:2508.15734),
 is a cross-check only: agentic calls carry contexts of 10^4-10^5 tokens and
 cost far more than a median chat prompt.
 """

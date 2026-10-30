@@ -271,7 +271,7 @@ PR a Copilot run served, and labelled with the PR title. Work on `main` is
   `unattributed`, and neither counts in the headline. Science `dirs` globs
   are matched against the project. Gemini 4 Argon is assumed Opus class and
   Flash models Haiku class, with cache reads costed as for Claude. Google's
-  0.24 Wh per median Gemini Apps text prompt (Elsey et al. 2025,
+  0.24 Wh per median Gemini Apps text prompt (Elsworth et al. 2025,
   arXiv:2508.15734) is a cross-check only.
 - *Copilot cloud.* AI Credits are token-metered, so they are converted to
   tokens at the credits-per-token rate measured on the local chat logs. Local
