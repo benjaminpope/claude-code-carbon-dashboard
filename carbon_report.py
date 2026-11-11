@@ -559,7 +559,7 @@ def methodology(s, cfg):
             ["Gemini (Antigravity)",
              "Uncached input, cached-read input and output tokens per model call from local "
              "conversation databases", "TokenClimate factors for an assumed model class",
-             "Gemini 4 Argon placed in the Opus class and Flash models in the Haiku class by "
+             "Gemini 4 Carbon and Argon placed in the Opus class and Flash models in the Haiku class by "
              "assumption; cache reads as for Claude; only the configured projects count. "
              "Cross-check: Google's 0.24 Wh per median Gemini Apps text prompt (Elsworth et al. 2025)"],
             ["Copilot cloud agent and review", "Workflow run time; billed AI Credits and premium requests",
