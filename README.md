@@ -263,15 +263,16 @@ PR a Copilot run served, and labelled with the PR title. Work on `main` is
   id, uncached input, cached-read input and output tokens (thinking tokens
   are part of output), and a response id for deduplication across the app
   and CLI roots. The day comes from the matching step's timestamp. A
-  conversation's project is the repository in its title (the `argon-review`
-  script's "Argon Review: owner/repo#N" and "Argon Adversarial Audit:
-  owner/repo"), else its workspace folder's git repository, else its parent
-  conversation's. Every call is kept in the ledger; calls for projects not
-  in `projects` are costed as class `other`, those with no project as
+  conversation's project is the repository in its title (the `carbon-review`
+  and `carbon-run` scripts' "Carbon Review: owner/repo#N", "Carbon
+  Adversarial Audit: owner/repo" and "Carbon Worker: owner/repo", and earlier
+  "Argon ..." titles), else its workspace folder's git repository, else its
+  parent conversation's. Every call is kept in the ledger; calls for projects
+  not in `projects` are costed as class `other`, those with no project as
   `unattributed`, and neither counts in the headline. Science `dirs` globs
-  are matched against the project. Gemini 4 Argon is assumed Opus class and
-  Flash models Haiku class, with cache reads costed as for Claude. Google's
-  0.24 Wh per median Gemini Apps text prompt (Elsworth et al. 2025,
+  are matched against the project. Gemini 4 Carbon and Argon are assumed Opus
+  class and Flash models Haiku class, with cache reads costed as for Claude.
+  Google's 0.24 Wh per median Gemini Apps text prompt (Elsworth et al. 2025,
   arXiv:2508.15734) is a cross-check only.
 - *Copilot cloud.* AI Credits are token-metered, so they are converted to
   tokens at the credits-per-token rate measured on the local chat logs. Local

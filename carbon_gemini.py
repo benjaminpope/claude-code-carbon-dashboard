@@ -9,7 +9,7 @@ In a conversation DB, gen_metadata(idx, data) holds one protobuf per model
 call, read here with a minimal wire-format reader (no protobuf dependency).
 Field 1 of it is the call:
 
-    1.19  model id, e.g. "gemini-4-argon", "gemini-3.8-flash-tiered"
+    1.19  model id, e.g. "gemini-4-carbon-high", "gemini-4-argon", "gemini-3.8-flash-tiered"
     1.4   usage: .2 uncached input, .5 cached-read input (absent on a
           conversation's first call), .3 output, .11 response id; .9 and
           .10 split the output (.3 = .9 + .10 on every call seen, so .10,
@@ -21,12 +21,13 @@ field 1 is that step's timestamp (seconds); a call without a matching step
 takes the conversation's last_modified_time.
 
 A conversation's project is, in order: the repository named in its title
-(the argon-review script titles its sessions "Argon Review: owner/repo#N"
-and "Argon Adversarial Audit: owner/repo (date)"); the git repository of its
-first workspace folder (git remote of the path, or the folder name under
-~/code), or the folder itself if it exists outside any repository; its
-parent conversation's project (a deleted subagent worktree); else
-"unattributed".
+(the carbon-review and carbon-run scripts title their sessions
+"Carbon Review: owner/repo#N", "Carbon Adversarial Audit: owner/repo (date)"
+and "Carbon Worker: owner/repo (slug)", alongside earlier "Argon ..."
+titles); the git repository of its first workspace folder (git remote of the
+path, or the folder name under ~/code), or the folder itself if it exists
+outside any repository; its parent conversation's project (a deleted
+subagent worktree); else "unattributed".
 
 Google publishes no per-token energy. Its per-prompt figure, 0.24 Wh for
 the median Gemini Apps text prompt (Elsworth et al. 2025, arXiv:2508.15734),
@@ -51,9 +52,11 @@ UNATTRIBUTED = "unattributed"
 
 # Energy class (low, mid, high) as TokenClimate families, by model id glob; the
 # first match wins. Assumptions, placed by tier as for the GPT rows in
-# carbon_vscode: Argon as the Gemini 4 flagship (Opus class), Flash models as
-# the small tier (Haiku class), with a range over the neighbouring tiers.
+# carbon_vscode: Carbon and historical Argon as the Gemini 4 flagship (Opus
+# class), Flash models as the small tier (Haiku class), with a range over the
+# neighbouring tiers.
 MODEL_CLASSES = [
+    ("gemini-4-carbon*", ("sonnet", "opus", "opus"), "assumed Opus class: Gemini 4 flagship"),
     ("gemini-4-argon*", ("sonnet", "opus", "opus"), "assumed Opus class: Gemini 4 flagship"),
     ("gemini-*-flash*", ("haiku", "haiku", "sonnet"), "assumed Haiku class: Flash tier"),
     ("*", ("sonnet", "opus", "fable"), "unrecognized: counted as Opus, like token_carbon"),
@@ -62,7 +65,7 @@ MODEL_CLASSES = [
 # Cache reads at this multiple of input energy (low, mid, high), as for Claude.
 PARAMS = {"cache_read_scale": (0.05, 0.08, 0.20)}
 
-TITLE_REPO = re.compile(r"^Argon [\w ]*?: ([\w.-]+/[\w.-]+)(?:#(\d+))?")
+TITLE_REPO = re.compile(r"^(?:Carbon|Argon) [\w ]*?: ([\w.-]+/[\w.-]+)(?:#(\d+))?")
 GIT_SLUG = re.compile(r"github\.com[:/]([\w.-]+/[\w.-]+?)(?:\.git)?/?$")
 
 

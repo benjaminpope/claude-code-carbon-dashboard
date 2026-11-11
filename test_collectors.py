@@ -263,7 +263,33 @@ class GeminiTest(unittest.TestCase):
         self.assertEqual(set(recs), {"r1"})
         self.assertIn("skipped 1 malformed", err.getvalue())
 
+    def test_carbon_titles_and_collect(self):
+        ts = 1794364800  # 2026-11-11 UTC
+        summ = {
+            "crev": {"title": "Carbon Review: me/demo#12"},
+            "caud": {"title": "Carbon Adversarial Audit: me/demo (2026-11-11)"},
+            "cwrk": {"title": "Carbon Worker: me/demo (slug)"},
+        }
+        self.assertEqual(carbon_gemini.project_of("crev", summ, self.code), ("me/demo", 12))
+        self.assertEqual(carbon_gemini.project_of("caud", summ, self.code), ("me/demo", None))
+        self.assertEqual(carbon_gemini.project_of("cwrk", summ, self.code), ("me/demo", None))
+        app = self.antigravity("app_carbon", {
+            "crev": (summ["crev"], [gen_blob("gemini-4-carbon-high", "c1", "k1", 500, 100)], {"k1": ts}),
+            "caud": (summ["caud"], [gen_blob("gemini-4-carbon-high", "c2", "k2", 400, 80)], {"k2": ts}),
+            "cwrk": (summ["cwrk"], [gen_blob("gemini-4-carbon-medium", "c3", "k3", 300, 60)], {"k3": ts}),
+        })
+        recs = carbon_gemini.collect([app], self.code)["gemini"]
+        self.assertEqual((recs["c1"]["project"], recs["c1"]["pr"], recs["c1"]["model"]),
+                         ("me/demo", 12, "gemini-4-carbon-high"))
+        self.assertEqual((recs["c2"]["project"], recs["c2"]["pr"]), ("me/demo", None))
+        self.assertEqual((recs["c3"]["project"], recs["c3"]["pr"], recs["c3"]["model"]),
+                         ("me/demo", None, "gemini-4-carbon-medium"))
+
     def test_model_classes(self):
+        self.assertEqual(carbon_gemini.model_class("gemini-4-carbon-high")[0],
+                         ("sonnet", "opus", "opus"))
+        self.assertEqual(carbon_gemini.model_class("gemini-4-carbon-medium")[0],
+                         ("sonnet", "opus", "opus"))
         self.assertEqual(carbon_gemini.model_class("gemini-4-argon")[0], ("sonnet", "opus", "opus"))
         self.assertEqual(carbon_gemini.model_class("gemini-3.8-flash-low")[0],
                          ("haiku", "haiku", "sonnet"))
