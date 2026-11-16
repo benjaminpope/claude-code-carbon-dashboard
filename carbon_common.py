@@ -26,6 +26,10 @@ import token_carbon as tc
 
 LEDGER_VERSION = 1
 
+# Report-wide boundary for llm_cost: True adds TokenClimate's embodied hardware
+# carbon, False reports operational (use-phase electricity) carbon only.
+EMBODIED = True
+
 # Green Algorithms (Lannelongue, Grealey & Inouye 2021, Adv. Sci. 8, 2100707):
 # power draw of memory, per GB allocated.
 GA_MEM_W_PER_GB = 0.3725
@@ -148,20 +152,25 @@ def triple(lo, mid, hi):
     return [float(lo), float(mid), float(hi)]
 
 
-def llm_cost(family, tokens, cache_read_scale=None):
-    """(kWh, kg) of facility energy for a token dict on a TokenClimate family.
+def llm_cost(family, tokens, cache_read_scale=None, provider=None, embodied=None):
+    """(kWh, kg) of facility energy for a token dict on a TokenClimate family or model row.
 
-    tokens has any of input, cache_write, cache_read, output. Server energy
-    uses token_carbon's factors; kWh includes the cloud PUE and kg uses the
-    same CO2 per server Wh as token_carbon.
+    family is a Claude family or a key of token_carbon.MODEL_ROWS. tokens has
+    any of input, cache_write, cache_read, output. Server energy uses
+    token_carbon's factors; kWh includes the PUE and kg the grid intensity of
+    the provider (default: the family's or row's own, so Anthropic for a
+    Claude family). Pass provider to cost a class fallback on the model's own
+    provider. embodied=False drops embodied hardware carbon (operational only).
     """
+    provider = provider or tc.factor(family)["provider"]
+    embodied = EMBODIED if embodied is None else embodied
     wh = 0.0
     for t, n in tokens.items():
         per = tc.wh_per_mtok(family, t)
         if t == "cache_read" and cache_read_scale is not None:
-            per = tc.FAMILIES[family]["in_wh"] * cache_read_scale
+            per = tc.factor(family)["in_wh"] * cache_read_scale
         wh += n / 1e6 * per
-    return wh * tc.PUE / 1000, wh * tc.CO2_G_PER_WH / 1000
+    return wh * tc.provider_pue(provider) / 1000, wh * tc.co2_g_per_wh(provider, embodied) / 1000
 
 
 def green_algorithms_kwh(hours, n_cpu=0, p_core_w=0.0, u_cpu=1.0, n_gpu=0, p_gpu_w=0.0,

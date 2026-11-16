@@ -66,19 +66,21 @@ once the transcript is gone the old counts stay under `?`.
 
 Each API call is costed with the factors for its own model family, following
 the [TokenClimate methodology](https://tokenclimate.com/en/methodology)
-(`tokenclimate-v3-2026-09`). Server energy per million tokens:
+(`tokenclimate-v3-2026-10`, methodology v4.26 of 13 Nov 2026). Server energy per million tokens:
 
 | Family | Input | Output | Confidence |
 |---|---:|---:|---|
-| Claude Haiku | 61 Wh | 1,262 Wh | medium (0.5 × Sonnet) |
+| Claude Haiku | 30.6 Wh | 633 Wh | medium (0.25 × Sonnet) |
 | Claude Sonnet | 119 Wh | 2,525 Wh | high (fitted to a published estimate) |
 | Claude Opus | 238 Wh | 5,050 Wh | medium (2 × Sonnet) |
 | Claude Fable | 476 Wh | 10,100 Wh | low (2 × Opus, price proxy) |
 
 - Cache write = input energy; cache read = 0.08 × input energy
   (TokenClimate's "cache energy" factor, plausible range 0.05–0.20).
-- CO₂e = energy × 0.37618 g/Wh: datacentre overhead (PUE 1.14) × grid
-  intensity (0.287 kg/kWh), plus 49 g/kWh of amortized hardware carbon.
+- CO₂e = energy × 0.37618 g/Wh for Anthropic: datacentre overhead (PUE 1.14) ×
+  grid intensity (0.287 kg/kWh), plus 49 g/kWh of amortized hardware carbon.
+  Add `--operational-only` (`token_carbon.py` and `carbon_report.py`) to leave
+  out the hardware term and report PUE × grid only; the default includes it.
 - The family is read from the model name (`claude-sonnet-5-5` → Sonnet).
   Models that match no family are counted as Opus, and the command line lists
   them.
@@ -86,6 +88,24 @@ the [TokenClimate methodology](https://tokenclimate.com/en/methodology)
 These reproduce TokenClimate's model sheets (e.g. Opus: 90 g per million input
 tokens, 1.9 kg per million output) and the worked example in its methodology;
 the tests check both.
+
+**Models TokenClimate lists for other providers** use TokenClimate's own row
+(`MODEL_ROWS` in `token_carbon.py`, v4.26), never a Claude class, together
+with that provider's infrastructure row (`PROVIDERS`; embodied carbon is the
+same 49 g/kWh, which TokenClimate's range note applies to every provider):
+
+| Model | Input | Output | Provider PUE / grid (kg/kWh) |
+|---|---:|---:|---|
+| Gemini 4 Argon | 7,431 Wh | 44,588 Wh | Google 1.09 / 0.345 |
+| Gemini 3.5 / 3.6 / 3.7 / 3.8 Flash | 765 / 665 / 683 / 681 Wh | 4,589 / 3,991 / 4,096 / 4,084 Wh | Google |
+| Gemini 3.5 / 3.1 Flash-Lite, 2.5 Flash / Pro | 56 / 57 / 267 / 2,938 Wh | 335 / 340 / 1,602 / 17,625 Wh | Google |
+| GPT-5.6 Sol / Terra / Luna | 857 / 279 / 98 Wh | 5,144 / 1,676 / 589 Wh | OpenAI 1.12 / 0.35 |
+| GPT-5.5 / 5.4 / 5.4 mini / 5.4 nano | 845 / 290 / 72 / 23 Wh | 5,067 / 1,741 / 430 / 136 Wh | OpenAI |
+
+Only models TokenClimate does not list (for example Gemini 4 Carbon and
+Hydrogen, unlisted Flash versions, other GPT-5.x) fall back to an assumed
+Claude class, costed on their own provider's PUE and grid. Cache reads use
+the same 0.08 factor.
 
 **The cache-read factor matters most.** Cache reads are about 98% of tokens,
 so at 0.08 they are about half the CO₂e, and at 1.0 they would be over 90%.
@@ -142,8 +162,8 @@ module:
 | Module | Source | Telemetry | Energy model |
 |---|---|---|---|
 | `token_carbon.py` | Claude Code | tokens by type, from transcripts | TokenClimate |
-| `carbon_vscode.py` | VS Code Copilot Chat | prompt and output tokens per request, from chat session logs | TokenClimate, by assumed model class |
-| `carbon_gemini.py` | Gemini in Google Antigravity (app and CLI) | input, cached-read and output tokens per model call, from local conversation databases | TokenClimate, by assumed model class |
+| `carbon_vscode.py` | VS Code Copilot Chat | prompt and output tokens per request, from chat session logs | TokenClimate rows, else an assumed model class |
+| `carbon_gemini.py` | Gemini in Google Antigravity (app and CLI) | input, cached-read and output tokens per model call, from local conversation databases | TokenClimate rows, else an assumed model class |
 | `carbon_copilot.py` | Copilot cloud agent and code review | run time of their Actions runs; billed AI Credits and premium requests | TokenClimate Sonnet factors |
 | `carbon_gha.py` | GitHub Actions CI | runner time per job | Green Algorithms |
 | `carbon_slurm.py` | Slurm jobs (OzSTAR/NT) | sacct allocation and run time; NT Job Report usage; `submissions.tsv` | Green Algorithms |
@@ -253,7 +273,7 @@ PR a Copilot run served, and labelled with the PR title. Work on `main` is
   counts are set several times as a response streams. Requests are
   deduplicated on request id, and undone requests still count. The model
   actually used (requests say `copilot/auto`) is read from the result
-  metadata. Claude models use their TokenClimate family; GPT and other
+  metadata. Claude models use their TokenClimate family; models TokenClimate lists (GPT-5.6, GPT-5.5) use its row; other GPT
   models are given an assumed class with a range. Prompts are costed as
   uncached input (`cached_fraction` sets a cached share); the high value
   counts the prompt of every model call in an agent request. Older requests

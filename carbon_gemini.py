@@ -44,18 +44,20 @@ from pathlib import Path
 from urllib.parse import unquote, urlparse
 
 import carbon_common as cc
+import token_carbon as tc
 
 ROOTS = [Path.home() / ".gemini" / "antigravity", Path.home() / ".gemini" / "antigravity-cli"]
 CODE_DIR = Path.home() / "code"
 UNATTRIBUTED = "unattributed"
 
-# Energy class (low, mid, high) as TokenClimate families, by model id glob; the
+# Models TokenClimate lists (token_carbon.MODEL_ROWS: Gemini 4 Argon, the
+# published Flash rows) use that row as it stands. For the rest, an energy
+# class (low, mid, high) as TokenClimate Claude families, by model id glob; the
 # first match wins. Assumptions, placed by tier as for the GPT rows in
-# carbon_vscode: Argon as the Gemini 4 flagship (Opus class), Carbon as the
-# mid tier (Sonnet class), Hydrogen and Flash models as the small tier (Haiku
-# class), each with a range over the neighbouring tiers.
+# carbon_vscode: Carbon as the Gemini 4 mid tier (Sonnet class), Hydrogen and
+# unlisted Flash models as the small tier (Haiku class), each with a range over
+# the neighbouring tiers. Either way the Google PUE and grid intensity apply.
 MODEL_CLASSES = [
-    ("gemini-4-argon*", ("sonnet", "opus", "opus"), "assumed Opus class: Gemini 4 flagship"),
     ("gemini-4-carbon*", ("haiku", "sonnet", "opus"), "assumed Sonnet class: Gemini 4 mid tier"),
     ("gemini-4-hydrogen*", ("haiku", "haiku", "sonnet"), "assumed Haiku class: Gemini 4 small tier"),
     ("gemini-*-flash*", ("haiku", "haiku", "sonnet"), "assumed Haiku class: Flash tier"),
@@ -263,6 +265,9 @@ def collect(roots=ROOTS, code_dir=CODE_DIR):
 def model_class(model):
     """(low, mid, high) TokenClimate families and the reason, from MODEL_CLASSES."""
     m = model.lower()
+    row = tc.listed_row(m)
+    if row:
+        return (row, row, row), f"TokenClimate row {row}"
     for pattern, families, note in MODEL_CLASSES:
         if fnmatch.fnmatch(m, pattern):
             return families, note
@@ -292,7 +297,7 @@ def cost(records, classes=None, include=(), repo=None, params=PARAMS):
         pr = r.get("pr") if repo and project == repo else None
         name = project.rsplit("/", 1)[-1]
         tokens = {"input": r["input"], "cache_read": r["cache_read"], "output": r["output"]}
-        e = [cc.llm_cost(f, tokens, cache_read_scale=s)
+        e = [cc.llm_cost(f, tokens, cache_read_scale=s, provider="google")
              for f, s in zip(fams, params["cache_read_scale"])]
         items.append({
             "source": "gemini", "id": rid, "day": r["day"], "label": r["model"],

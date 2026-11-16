@@ -48,7 +48,7 @@ def test_gemini_4_carbon_and_hydrogen_classes():
     hydrogen = carbon_gemini.model_class("gemini-4-hydrogen")
     assert carbon[0][1] == "sonnet" and "unrecognized" not in carbon[1]
     assert hydrogen[0][1] == "haiku" and "unrecognized" not in hydrogen[1]
-    assert carbon_gemini.model_class("gemini-4-argon")[0][1] == "opus"
+    assert carbon_gemini.model_class("gemini-4-argon")[0] == ("gemini-4-argon",) * 3
     assert "unrecognized" in carbon_gemini.model_class("gemini-9-new")[1]
 
 
