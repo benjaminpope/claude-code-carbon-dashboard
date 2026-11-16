@@ -14,7 +14,7 @@ transcripts are gone. The history holds token counts, the branch and the
 working directory only, never conversation text.
 
 Energy and emission factors follow the TokenClimate methodology
-(tokenclimate-v3-2026-09, https://tokenclimate.com/en/methodology): per-family
+(tokenclimate-v3-2026-10, methodology v4.26, https://tokenclimate.com/en/methodology): per-family
 server energy for input and output tokens (Haiku, Sonnet, Opus, Fable), cache
 writes at the input rate, cache reads at 0.08 times it, and CO2e = energy x
 (PUE x grid intensity + embodied hardware carbon). Models that match no family
@@ -49,23 +49,76 @@ PROJECTS = Path(os.environ.get("CLAUDE_PROJECTS_DIR", Path.home() / ".claude" / 
 TEMPLATE = Path(__file__).resolve().parent / "dashboard_template.html"
 HISTORY_VERSION = 1
 
-# Server (IT) energy in Wh per million tokens, TokenClimate tokenclimate-v3-2026-09
+FACTOR_SET = "tokenclimate-v3-2026-10"
+METHODOLOGY = "v4.26-methodology-2026-11"
+
+# Server (IT) energy in Wh per million tokens, TokenClimate tokenclimate-v3-2026-10
 # methodology, "Anthropic parameters". Only Sonnet is fitted to a published
-# estimate; Opus is 2x Sonnet, Haiku 0.5x and Fable 2x Opus, hence the
-# confidence levels.
+# estimate; Opus is 2x Sonnet, Haiku 0.25x (0.5x before v4.15) and Fable 2x Opus,
+# hence the confidence levels.
 FAMILIES = {
-    "haiku": {"label": "Claude Haiku", "in_wh": 61, "out_wh": 1262, "confidence": "medium"},
-    "sonnet": {"label": "Claude Sonnet", "in_wh": 119, "out_wh": 2525, "confidence": "high"},
-    "opus": {"label": "Claude Opus", "in_wh": 238, "out_wh": 5050, "confidence": "medium"},
-    "fable": {"label": "Claude Fable", "in_wh": 476, "out_wh": 10100, "confidence": "low"},
+    "haiku": {"label": "Claude Haiku", "in_wh": 30.6, "out_wh": 633, "confidence": "medium",
+              "provider": "anthropic"},
+    "sonnet": {"label": "Claude Sonnet", "in_wh": 119, "out_wh": 2525, "confidence": "high",
+               "provider": "anthropic"},
+    "opus": {"label": "Claude Opus", "in_wh": 238, "out_wh": 5050, "confidence": "medium",
+             "provider": "anthropic"},
+    "fable": {"label": "Claude Fable", "in_wh": 476, "out_wh": 10100, "confidence": "low",
+              "provider": "anthropic"},
 }
 FALLBACK_FAMILY = "opus"
+
+# Per-model rows TokenClimate publishes for other providers (methodology page,
+# "Other providers' per-token energy", v4.26; Wh per million tokens, IT energy,
+# EcoLogits 0.11.3 unless noted). Matched by model-id prefix, longest first, so
+# "gemini-3.8-flash-tiered" finds "gemini-3.8-flash". Models not listed here
+# fall back to an assumed Claude class (see carbon_gemini and carbon_vscode).
+# Rows here are used as published, never mapped to a Claude class.
+MODEL_ROWS = {
+    "gemini-4-argon": (7431, 44588, "google", "low"),      # price proxy, v4.20
+    "gemini-3.8-flash": (681, 4084, "google", "low"),
+    "gemini-3.7-flash": (683, 4096, "google", "low"),
+    "gemini-3.6-flash": (665, 3991, "google", "low"),
+    "gemini-3.5-flash-lite": (56, 335, "google", "low"),
+    "gemini-3.5-flash": (765, 4589, "google", "low"),
+    "gemini-3.1-flash-lite": (57, 340, "google", "low"),
+    "gemini-2.5-flash": (267, 1602, "google", "low"),
+    "gemini-2.5-pro": (2938, 17625, "google", "low"),
+    "gpt-5.6-sol": (857, 5144, "openai", "low"),
+    "gpt-5.6-terra": (279, 1676, "openai", "low"),
+    "gpt-5.6-luna": (98, 589, "openai", "low"),
+    "gpt-5.5": (845, 5067, "openai", "low"),
+    "gpt-5.4-mini": (72, 430, "openai", "low"),
+    "gpt-5.4-nano": (23, 136, "openai", "low"),
+    "gpt-5.4": (290, 1741, "openai", "low"),
+}
+
+# Provider infrastructure rows (TokenClimate "Provider infrastructure"):
+# (PUE, grid intensity in kg CO2e/kWh). Embodied hardware carbon is one
+# constant, 49 g CO2e per kWh of IT energy (v4.7; range 22-66). TokenClimate
+# prints it in the Anthropic row and says its range applies to every provider
+# (and its v4.7 entry moved OpenAI and Google CO2e), so it is applied to all.
+PROVIDERS = {"anthropic": (1.14, 0.287), "google": (1.09, 0.345), "openai": (1.12, 0.35)}
 
 # CO2e per Wh of server energy: datacentre overhead (PUE) times grid carbon
 # intensity, plus amortized hardware (embodied) carbon. AWS parameters from
 # TokenClimate: PUE 1.14, 0.287 kg/kWh, 49 g/kWh.
-PUE, GRID_G_PER_WH, EMBODIED_G_PER_WH = 1.14, 0.287, 0.049
+EMBODIED_G_PER_WH = 0.049
+PUE, GRID_G_PER_WH = PROVIDERS["anthropic"]
 CO2_G_PER_WH = PUE * GRID_G_PER_WH + EMBODIED_G_PER_WH  # 0.37618
+
+
+def provider_pue(provider="anthropic"):
+    return PROVIDERS[provider][0]
+
+
+def co2_g_per_wh(provider="anthropic", embodied=True):
+    """g CO2e per server Wh: PUE x grid, plus embodied carbon unless excluded.
+
+    embodied=False is the operational-only boundary (use-phase electricity).
+    """
+    pue, grid = PROVIDERS[provider]
+    return pue * grid + (EMBODIED_G_PER_WH if embodied else 0.0)
 
 # Relative to uncached input. A cache write runs the same prefill as input; a
 # cache read reuses stored keys and values and costs 0.08x (TokenClimate,
@@ -86,8 +139,35 @@ def model_family(model):
     return "fable" if "mythos" in m else FALLBACK_FAMILY
 
 
+def listed_row(model):
+    """Key of the TokenClimate-published row for a model id, or None."""
+    m = model.lower().rsplit("/", 1)[-1]
+    for key in sorted(MODEL_ROWS, key=len, reverse=True):
+        if m.startswith(key):
+            return key
+    return None
+
+
+def provider_of(model):
+    """Provider whose infrastructure row applies to a model id (Anthropic if unknown)."""
+    m = model.lower().rsplit("/", 1)[-1]
+    if m.startswith(("gpt-", "o1", "o3", "o4")):
+        return "openai"
+    if m.startswith("gemini"):
+        return "google"
+    return "anthropic"
+
+
+def factor(key):
+    """Factor dict (in_wh, out_wh, provider, ...) for a Claude family or a listed model row."""
+    if key in FAMILIES:
+        return FAMILIES[key]
+    i, o, provider, conf = MODEL_ROWS[key]
+    return {"label": key, "in_wh": i, "out_wh": o, "confidence": conf, "provider": provider}
+
+
 def wh_per_mtok(family, token_type):
-    f = FAMILIES[family]
+    f = factor(family)
     return {"input": f["in_wh"], "cache_write": f["in_wh"] * CACHE_WRITE_SCALE,
             "cache_read": f["in_wh"] * CACHE_READ_SCALE, "output": f["out_wh"]}[token_type]
 
@@ -352,7 +432,7 @@ def select(records, project=None, since=None, until=None):
             and (not until or r["day"] <= until)]
 
 
-def tally(records, by=None):
+def tally(records, by=None, embodied=True):
     zero = lambda: {t: 0.0 for t in TYPES}
     groups = defaultdict(lambda: {"calls": 0, "tokens": zero(), "wh": zero(), "g_co2e": zero()})
     for r in records:
@@ -364,7 +444,7 @@ def tally(records, by=None):
             wh = r[t] / 1e6 * wh_per_mtok(family, t)
             g["tokens"][t] += r[t]
             g["wh"][t] += wh
-            g["g_co2e"][t] += wh * CO2_G_PER_WH
+            g["g_co2e"][t] += wh * co2_g_per_wh(embodied=embodied)
     for g in groups.values():
         g["tokens"] = {t: int(v) for t, v in g["tokens"].items()}
         g["wh"]["total"] = sum(g["wh"][t] for t in TYPES)
@@ -372,9 +452,10 @@ def tally(records, by=None):
     return dict(sorted(groups.items(), key=lambda kv: -kv[1]["g_co2e"]["total"]))
 
 
-def factor_table():
+def factor_table(embodied=True):
     """Wh and g CO2e per million tokens, by family and token type."""
-    return {f: {t: {"wh": wh_per_mtok(f, t), "g_co2e": wh_per_mtok(f, t) * CO2_G_PER_WH}
+    k = co2_g_per_wh(embodied=embodied)
+    return {f: {t: {"wh": wh_per_mtok(f, t), "g_co2e": wh_per_mtok(f, t) * k}
                 for t in TYPES} for f in FAMILIES}
 
 
@@ -472,6 +553,8 @@ def main():
     ap.add_argument("--until", help="ISO date, inclusive")
     ap.add_argument("--project", help="substring of the project name")
     ap.add_argument("--by", choices=["project", "session", "model", "family", "day", "branch"])
+    ap.add_argument("--operational-only", action="store_true",
+                    help="exclude embodied hardware carbon from CO2e (use-phase electricity only)")
     ap.add_argument("--json", action="store_true")
     ap.add_argument("--html", metavar="PATH", help="write the dashboard to PATH")
     ap.add_argument("--force", action="store_true",
@@ -500,12 +583,15 @@ def run(args):
         fields = ("session", "day", "model", "branch", "cwd", "project") + COUNTS
         rows = [{f: r.get(f, "") for f in fields}
                 for r in sorted(records, key=lambda r: (r["day"], r["session"], r["model"]))]
-        json.dump({"factors_per_million": factor_table(), "groups": tally(records, args.by),
+        emb = not args.operational_only
+        json.dump({"factor_set": FACTOR_SET, "embodied_included": emb,
+                   "factors_per_million": factor_table(emb),
+                   "groups": tally(records, args.by, emb),
                    "records": rows}, sys.stdout, indent=2)
         print()
     else:
         unknown = {r["model"] for r in records if not is_known_family(r["model"])}
-        print_table(tally(records, args.by), args.by, unknown)
+        print_table(tally(records, args.by, not args.operational_only), args.by, unknown)
 
 
 if __name__ == "__main__":

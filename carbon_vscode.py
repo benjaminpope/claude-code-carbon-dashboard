@@ -37,18 +37,16 @@ import token_carbon as tc
 
 STORAGE = Path.home() / "Library" / "Application Support" / "Code" / "User"
 
-# Energy class (low, mid, high) as TokenClimate families, by model id prefix;
-# the first match wins. Claude models use their own family. The GPT and MAI
-# rows are assumptions: neither OpenAI nor Microsoft publishes per-token energy
+# Models TokenClimate lists (token_carbon.MODEL_ROWS: gpt-5.6-sol/-terra/-luna,
+# gpt-5.5, ...) use that published row, never a Claude class. For the rest, an
+# energy class (low, mid, high) as TokenClimate families, by model id prefix;
+# the first match wins. Claude models use their own family. The remaining GPT
+# and MAI rows are assumptions: neither OpenAI nor Microsoft publishes per-token energy
 # or model size, so each is placed by its price and positioning against the
 # Claude tiers (GPT-5.6 Sol > Terra > Luna; Codex and MAI Flash as smaller
 # coding models), with a range spanning the neighbouring tiers.
 MODEL_CLASSES = [
     ("claude-", None, "TokenClimate family of the Claude model"),
-    ("gpt-5.6-sol", ("sonnet", "opus", "fable"), "assumed Opus class: largest GPT-5.6 tier"),
-    ("gpt-5.6-terra", ("sonnet", "opus", "opus"), "assumed Opus class: middle GPT-5.6 tier"),
-    ("gpt-5.5", ("sonnet", "opus", "opus"), "assumed Opus class: GPT-5.5 flagship"),
-    ("gpt-5.6-luna", ("haiku", "sonnet", "opus"), "assumed Sonnet class: smallest GPT-5.6 tier"),
     ("gpt-5.3-codex", ("haiku", "sonnet", "opus"), "assumed Sonnet class: coding model"),
     ("gpt-5", ("haiku", "sonnet", "opus"), "assumed Sonnet class: other GPT-5.x"),
     ("mai-", ("haiku", "haiku", "sonnet"), "assumed Haiku class: 'Flash' tier"),
@@ -148,6 +146,9 @@ def resolved_model(q):
 def model_class(model):
     """(low, mid, high) TokenClimate families and the reason, from MODEL_CLASSES."""
     m = model.lower()
+    row = tc.listed_row(m)
+    if row:
+        return (row, row, row), f"TokenClimate row {row}"
     for prefix, families, note in MODEL_CLASSES:
         if m.startswith(prefix):
             if families is None:
@@ -240,9 +241,10 @@ def cost(records, classes=None, params=PARAMS):
         fams, _ = model_class(r["model"])
         mid_tokens = {"input": prompt * (1 - cf), "cache_read": prompt * cf, "output": output}
         high_tokens = {"input": prompt * (max(r.get("rounds", 0), 1) + 1) / 2, "output": output}
-        lo = (0.0, 0.0) if imputed else cc.llm_cost(fams[0], mid_tokens)
-        mid = cc.llm_cost(fams[1], mid_tokens)
-        hi = cc.llm_cost(fams[2], high_tokens)
+        prov = tc.provider_of(r["model"])
+        lo = (0.0, 0.0) if imputed else cc.llm_cost(fams[0], mid_tokens, provider=prov)
+        mid = cc.llm_cost(fams[1], mid_tokens, provider=prov)
+        hi = cc.llm_cost(fams[2], high_tokens, provider=prov)
         items.append({
             "source": "vscode_copilot", "id": rid, "day": r["day"], "label": r["model"],
             "kind": "local chat (imputed tokens)" if imputed else "local chat",

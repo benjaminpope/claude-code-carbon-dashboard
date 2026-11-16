@@ -103,6 +103,45 @@ class TokenCarbonTest(unittest.TestCase):
         self.assertAlmostEqual(total["wh"]["total"], 134.06, places=2)
         self.assertAlmostEqual(total["g_co2e"]["total"], 50.43, places=2)
 
+    def test_factors_follow_tokenclimate_v3_2026_10(self):
+        self.assertEqual(tc.FACTOR_SET, "tokenclimate-v3-2026-10")
+        got = {f: (v["in_wh"], v["out_wh"]) for f, v in tc.FAMILIES.items()}
+        self.assertEqual(got, {"haiku": (30.6, 633), "sonnet": (119, 2525),
+                               "opus": (238, 5050), "fable": (476, 10100)})
+        self.assertEqual(tc.CACHE_READ_SCALE, 0.08)
+
+    def test_listed_non_claude_models_use_their_row(self):
+        self.assertEqual(tc.listed_row("gemini-4-argon"), "gemini-4-argon")
+        self.assertEqual(tc.listed_row("gemini-3.5-flash-lite-x"), "gemini-3.5-flash-lite")
+        self.assertEqual(tc.listed_row("gpt-5.6-sol"), "gpt-5.6-sol")
+        self.assertIsNone(tc.listed_row("gemini-4-carbon"))
+        self.assertIsNone(tc.listed_row("claude-opus-5-5"))
+        self.assertEqual((tc.wh_per_mtok("gemini-4-argon", "input"),
+                          tc.wh_per_mtok("gemini-4-argon", "output")), (7431, 44588))
+        self.assertAlmostEqual(tc.wh_per_mtok("gpt-5.5", "cache_read"), 845 * 0.08)
+
+    def test_provider_infrastructure_rows(self):
+        self.assertEqual(tc.PROVIDERS, {"anthropic": (1.14, 0.287), "google": (1.09, 0.345),
+                                        "openai": (1.12, 0.35)})
+        self.assertAlmostEqual(tc.co2_g_per_wh("anthropic"), 0.37618)
+        self.assertAlmostEqual(tc.co2_g_per_wh("google"), 1.09 * 0.345 + 0.049)
+        self.assertEqual(tc.provider_of("gpt-5.6-sol"), "openai")
+        self.assertEqual(tc.provider_of("gemini-4-argon"), "google")
+        self.assertEqual(tc.provider_of("claude-opus-5-5"), "anthropic")
+
+    def test_operational_only_excludes_embodied(self):
+        self.write("s1.jsonl", [call("m1", "s1", "/Users/me/code/demo",
+                                     inp=1_000_000, cw=0, cr=0, out=1_000_000)])
+        records = tc.update_history(self.data, self.projects)
+        full = tc.tally(records)["total"]
+        op = tc.tally(records, embodied=False)["total"]
+        self.assertEqual(op["wh"]["total"], full["wh"]["total"])
+        self.assertAlmostEqual(op["g_co2e"]["output"], 5050 * 1.14 * 0.287)  # PUE x grid
+        self.assertAlmostEqual(op["g_co2e"]["total"] / full["g_co2e"]["total"],
+                               1.14 * 0.287 / tc.CO2_G_PER_WH)
+        self.assertAlmostEqual(tc.factor_table(False)["opus"]["output"]["g_co2e"],
+                               5050 * 1.14 * 0.287)
+
     def test_model_families(self):
         self.assertEqual(tc.model_family("claude-opus-5-5"), "opus")
         self.assertEqual(tc.model_family("claude-sonnet-5-5"), "sonnet")
@@ -118,7 +157,7 @@ class TokenCarbonTest(unittest.TestCase):
         by = tc.tally(tc.update_history(self.data, self.projects), "family")
         self.assertEqual(set(by), {"Claude Opus", "Claude Haiku"})
         ratio = by["Claude Haiku"]["g_co2e"]["output"] / by["Claude Opus"]["g_co2e"]["output"]
-        self.assertAlmostEqual(ratio, 1262 / 5050)
+        self.assertAlmostEqual(ratio, 633 / 5050)
 
     def test_synthetic_messages_are_not_calls(self):
         self.write("s1.jsonl", [call("m1", "s1", "/Users/me/code/demo"),

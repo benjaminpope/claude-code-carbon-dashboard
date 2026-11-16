@@ -581,7 +581,7 @@ def methodology(s, cfg):
         "dominates the uncertainty of the Claude figure, and Copilot's cloud inference is "
         "inferred from billing or run time rather than measured.", "",
         "### Sources", "",
-        "- TokenClimate, methodology `tokenclimate-v3-2026-09`, https://tokenclimate.com/en/methodology",
+        "- TokenClimate, methodology `tokenclimate-v3-2026-10`, https://tokenclimate.com/en/methodology",
         "- Lannelongue, L., Grealey, J. & Inouye, M. (2021), Green Algorithms: Quantifying the "
         "carbon footprint of computation, *Advanced Science* 8, 2100707, "
         "https://doi.org/10.1002/advs.202100707",
@@ -625,6 +625,9 @@ def main(argv=None):
     ap.add_argument("--out", metavar="OUT.json", help="output of --merge-counts")
     ap.add_argument("--ledger", help="ledger path (default: the config's, else "
                                      "~/.claude/carbon/ledger-<repo>.json)")
+    ap.add_argument("--operational-only", action="store_true",
+                    help="exclude embodied hardware carbon (operational boundary: "
+                         "PUE x grid only); the default includes it")
     ap.add_argument("--offline", action="store_true", help="cost the ledger without fetching")
     ap.add_argument("--sources", default=",".join(SOURCES),
                     help=f"comma-separated subset of {','.join(SOURCES)} to fetch")
@@ -646,6 +649,7 @@ def main(argv=None):
         return
     if not args.config:
         ap.error("--config is required")
+    cc.EMBODIED = not args.operational_only
     cfg = load_config(args.config)
     ledger_path = Path(args.ledger or cfg.get("ledger") or
                        tc.DATA_DIR / f"ledger-{cfg['repo'].split('/')[1]}.json").expanduser()

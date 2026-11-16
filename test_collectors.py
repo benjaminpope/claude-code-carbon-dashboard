@@ -117,22 +117,38 @@ class VSCodeTest(unittest.TestCase):
 
     def test_model_classes(self):
         self.assertEqual(carbon_vscode.model_class("claude-sonnet-5")[0], ("sonnet",) * 3)
-        self.assertEqual(carbon_vscode.model_class("gpt-5.6-terra")[0][1], "opus")
-        self.assertEqual(carbon_vscode.model_class("gpt-5.6-luna")[0][1], "sonnet")
-        self.assertEqual(carbon_vscode.model_class("gpt-5.5-2026-04-23")[0][1], "opus")
+        # Models TokenClimate lists use their own row, not a Claude class.
+        self.assertEqual(carbon_vscode.model_class("gpt-5.6-terra")[0], ("gpt-5.6-terra",) * 3)
+        self.assertEqual(carbon_vscode.model_class("gpt-5.6-luna")[0], ("gpt-5.6-luna",) * 3)
+        self.assertEqual(carbon_vscode.model_class("gpt-5.6-sol")[0], ("gpt-5.6-sol",) * 3)
+        self.assertEqual(carbon_vscode.model_class("gpt-5.5-2026-04-23")[0], ("gpt-5.5",) * 3)
+        # Unlisted GPT models keep the assumed class.
+        self.assertEqual(carbon_vscode.model_class("gpt-5.3-codex")[0][1], "sonnet")
         self.assertEqual(carbon_vscode.model_class("something-new")[0][1], "opus")
 
     def test_request_energy_by_hand(self):
         recs = {"rA": {"model": "gpt-5.6-terra", "prompt": 1000, "output": 250, "rounds": 3,
                        "has_tokens": True, "ts": 0, "day": "2026-09-19"}}
         item = carbon_vscode.cost(recs)[0]
-        # Opus class: 1000 x 238 + 250 x 5050 Wh per million = 1.5005 server Wh.
-        self.assertAlmostEqual(item["kwh"][1], 1.5005 * 1.14 / 1000)
-        self.assertAlmostEqual(item["kg"][1], 1.5005 * tc.CO2_G_PER_WH / 1000)
-        # High: prompt x (3 + 1) / 2, still Opus.
-        self.assertAlmostEqual(item["kwh"][2], (2000 * 238 + 250 * 5050) / 1e6 * 1.14 / 1000)
-        # Low: Sonnet class.
-        self.assertAlmostEqual(item["kwh"][0], (1000 * 119 + 250 * 2525) / 1e6 * 1.14 / 1000)
+        # TokenClimate's gpt-5.6-terra row, 279 / 1,676 Wh per million tokens:
+        # 1000 x 279 + 250 x 1676 = 0.698 server Wh, OpenAI PUE 1.12, CIF 0.35.
+        k = 1.12 * 0.35 + 0.049
+        self.assertAlmostEqual(item["kwh"][1], 0.698 * 1.12 / 1000)
+        self.assertAlmostEqual(item["kg"][1], 0.698 * k / 1000)
+        self.assertAlmostEqual(item["kwh"][0], item["kwh"][1])
+        # High: prompt x (3 + 1) / 2, same row.
+        self.assertAlmostEqual(item["kwh"][2], (2000 * 279 + 250 * 1676) / 1e6 * 1.12 / 1000)
+
+    def test_operational_only_drops_embodied(self):
+        recs = {"rA": {"model": "gpt-5.6-terra", "prompt": 1000, "output": 250, "rounds": 3,
+                       "has_tokens": True, "ts": 0, "day": "2026-09-19"}}
+        self.addCleanup(setattr, cc, "EMBODIED", cc.EMBODIED)
+        full = carbon_vscode.cost(recs)[0]
+        cc.EMBODIED = False
+        op = carbon_vscode.cost(recs)[0]
+        self.assertAlmostEqual(op["kg"][1], 0.698 * 1.12 * 0.35 / 1000)   # PUE x CIF only
+        self.assertAlmostEqual(op["kg"][1] / full["kg"][1], 1.12 * 0.35 / (1.12 * 0.35 + 0.049))
+        self.assertEqual(op["kwh"], full["kwh"])                           # energy unchanged
 
     def test_cached_fraction_and_imputation(self):
         recs = {f"r{i}": {"model": "claude-opus-5", "prompt": 1000 * (i + 1), "output": 10,
@@ -264,9 +280,14 @@ class GeminiTest(unittest.TestCase):
         self.assertIn("skipped 1 malformed", err.getvalue())
 
     def test_model_classes(self):
-        self.assertEqual(carbon_gemini.model_class("gemini-4-argon")[0], ("sonnet", "opus", "opus"))
+        self.assertEqual(carbon_gemini.model_class("gemini-4-argon")[0], ("gemini-4-argon",) * 3)
         self.assertEqual(carbon_gemini.model_class("gemini-3.8-flash-low")[0],
+                         ("gemini-3.8-flash",) * 3)
+        # Not listed by TokenClimate: assumed class.
+        self.assertEqual(carbon_gemini.model_class("gemini-3.9-flash")[0],
                          ("haiku", "haiku", "sonnet"))
+        self.assertEqual(carbon_gemini.model_class("gemini-4-carbon")[0],
+                         ("haiku", "sonnet", "opus"))
         self.assertEqual(carbon_gemini.model_class("gemini-9-new")[0][1], "opus")
 
     def test_call_energy_by_hand_and_classes(self):
@@ -284,15 +305,24 @@ class GeminiTest(unittest.TestCase):
         self.assertEqual((items["a"]["feature_hint"], items["b"]["feature_hint"]),
                          (None, "Gemini: demo-validation PR reviews"))
         a = items["a"]
-        # Mid, Opus: 1000 x 238 + 10000 x 238 x 0.08 + 300 x 5050 Wh per million.
-        mid = (1000 * 238 + 10000 * 238 * 0.08 + 300 * 5050) / 1e6
-        self.assertAlmostEqual(a["kwh"][1], mid * 1.14 / 1000)
-        self.assertAlmostEqual(a["kg"][1], mid * tc.CO2_G_PER_WH / 1000)
-        # Low: Sonnet, cache reads at 0.05; high: Opus, cache reads at 0.20.
-        lo = (1000 * 119 + 10000 * 119 * 0.05 + 300 * 2525) / 1e6
-        hi = (1000 * 238 + 10000 * 238 * 0.20 + 300 * 5050) / 1e6
-        self.assertAlmostEqual(a["kwh"][0], lo * 1.14 / 1000)
-        self.assertAlmostEqual(a["kwh"][2], hi * 1.14 / 1000)
+        # TokenClimate's gemini-4-argon row, 7,431 / 44,588 Wh per million, with
+        # cache reads at 0.08 (mid), 0.05 (low) and 0.20 (high); Google PUE 1.09
+        # and CIF 0.345.
+        def wh(s):
+            return (1000 * 7431 + 10000 * 7431 * s + 300 * 44588) / 1e6
+        self.assertAlmostEqual(a["kwh"][1], wh(0.08) * 1.09 / 1000)
+        self.assertAlmostEqual(a["kg"][1], wh(0.08) * (1.09 * 0.345 + 0.049) / 1000)
+        self.assertAlmostEqual(a["kwh"][0], wh(0.05) * 1.09 / 1000)
+        self.assertAlmostEqual(a["kwh"][2], wh(0.20) * 1.09 / 1000)
+
+    def test_unlisted_model_uses_class_on_google_infrastructure(self):
+        rec = {"model": "gemini-4-carbon", "input": 1000, "cache_read": 0, "output": 300,
+               "ts": 0, "day": "2026-10-28", "project": "me/demo"}
+        a = carbon_gemini.cost({"a": rec})[0]
+        # Mid: Sonnet class energy, Google PUE and grid.
+        wh = (1000 * 119 + 300 * 2525) / 1e6
+        self.assertAlmostEqual(a["kwh"][1], wh * 1.09 / 1000)
+        self.assertAlmostEqual(a["kg"][1], wh * (1.09 * 0.345 + 0.049) / 1000)
 
 
 class SlurmTest(unittest.TestCase):
@@ -614,7 +644,7 @@ class LedgerAndReportTest(unittest.TestCase):
             carbon_report.main(["--config", str(cfg_path), "--ledger", str(ledger), "--offline",
                                 "--summary", str(summary)])
             s = json.loads(summary.read_text())
-            self.assertAlmostEqual(s["total"]["kg"][1], 2 * 5050 * tc.CO2_G_PER_WH / 1000)
+            self.assertAlmostEqual(s["total"]["kg"][1], 2 * 44588 * tc.co2_g_per_wh("google") / 1000)
             self.assertEqual(list(s["by_source"]), ["gemini"])
             self.assertEqual(list(s["by_feature"]),
                              ["#9 Add a feature", "Gemini: demo audits and other work"])
