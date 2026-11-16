@@ -33,7 +33,7 @@ from pathlib import Path
 import carbon_common as cc
 
 # NT hardware and site parameters. P_core is the AMD EPYC 7543 TDP over its
-# cores (225 W / 32); P_gpu the NVIDIA A100-SXM4-80GB TDP (400 W). Memory is
+# cores (225 W / 32); P_gpu the NVIDIA A100-SXM4-80GB power limit (500 W, measured). Memory is
 # the allocation, as in Green Algorithms. Where the Job Report has no
 # measured usage, u_cpu is TotalCPU / (elapsed x cores) from sacct, and
 # failing that, like u_gpu, takes the (low, mid, high) default below; Green
@@ -42,12 +42,15 @@ import carbon_common as cc
 # Victoria's location-based scope 2 factor, 0.74 kg CO2e/kWh, from the
 # Australian National Greenhouse Accounts Factors 2026 (DCCEEW), Table 1;
 # adding the scope 3 (transmission loss) factor would make it 0.85.
+# p_gpu_w = 500: nvidia-smi on an NT GPU node, 17 Nov 2026, reported A100-SXM4-80GB
+# power.limit = power.default_limit = power.max_limit = 500 W (the Dell XE8545
+# 80 GB / 500 W option), not NVIDIA's generic 400 W TDP.
 # A GPU job without a measured GPU usage takes, as its mid value, the median
 # measured usage of jobs with the same name (when at least gpu_peers_min have
 # one), widening the default's low and high to include it. Unfinished jobs are not
 # costed: sacct's elapsed time is a snapshot and they have no Job Report.
 PARAMS = {
-    "p_core_w": 225 / 32, "p_gpu_w": 400.0,
+    "p_core_w": 225 / 32, "p_gpu_w": 500.0,
     "u_cpu_default": (0.5, 1.0, 1.0), "u_gpu_default": (0.25, 1.0, 1.0),
     "n_cpu_default": 4, "pue": 1.67, "grid_kg_per_kwh": 0.74, "gpu_peers_min": 3,
 }
