@@ -269,8 +269,8 @@ PR a Copilot run served, and labelled with the PR title. Work on `main` is
   conversation's. Every call is kept in the ledger; calls for projects not
   in `projects` are costed as class `other`, those with no project as
   `unattributed`, and neither counts in the headline. Science `dirs` globs
-  are matched against the project. Gemini 4 Argon is assumed Opus class and
-  Flash models Haiku class, with cache reads costed as for Claude. Google's
+  are matched against the project. Gemini 4 Argon is assumed Opus class, Carbon Sonnet class, and
+  Hydrogen and Flash models Haiku class, with cache reads costed as for Claude. Google's
   0.24 Wh per median Gemini Apps text prompt (Elsworth et al. 2025,
   arXiv:2508.15734) is a cross-check only.
 - *Copilot cloud.* AI Credits are token-metered, so they are converted to
@@ -292,6 +292,25 @@ References: [TokenClimate methodology](https://tokenclimate.com/en/methodology);
 Lannelongue, Grealey & Inouye (2021), [Green Algorithms](https://doi.org/10.1002/advs.202100707),
 *Advanced Science* 8, 2100707;
 DCCEEW (2026), [Australian National Greenhouse Accounts Factors](https://www.dcceew.gov.au/climate-change/publications/national-greenhouse-accounts-factors).
+
+## Token counts for a paper
+
+`carbon_report.py --export-counts out.json` writes sessions and tokens (input,
+cache read, cache write where recorded, output, total) per model, per scope
+group and combined, for Claude Code (from `history.json`, so it outlasts the
+30-day transcript cleanup) and Gemini in Antigravity. Scope comes from a local,
+uncommitted file, `~/.config/claude-carbon/scope.toml` (or `--scope`, or
+`$CLAUDE_CARBON_SCOPE`); `scope.example.toml` shows the format. Output has no
+titles, paths or session ids; per-session rows are keyed by a hash of the id,
+only so exports can be merged. `--aggregate-only` drops the rows.
+
+```
+carbon_report.py --export-counts mac-a.json
+carbon_report.py --merge-counts mac-a.json mac-b.json --out counts.json
+```
+
+The merge deduplicates by session (taking the larger count) and works with one
+input; its output has no rows.
 
 ## Related
 

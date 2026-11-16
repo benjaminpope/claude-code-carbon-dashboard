@@ -51,10 +51,13 @@ UNATTRIBUTED = "unattributed"
 
 # Energy class (low, mid, high) as TokenClimate families, by model id glob; the
 # first match wins. Assumptions, placed by tier as for the GPT rows in
-# carbon_vscode: Argon as the Gemini 4 flagship (Opus class), Flash models as
-# the small tier (Haiku class), with a range over the neighbouring tiers.
+# carbon_vscode: Argon as the Gemini 4 flagship (Opus class), Carbon as the
+# mid tier (Sonnet class), Hydrogen and Flash models as the small tier (Haiku
+# class), each with a range over the neighbouring tiers.
 MODEL_CLASSES = [
     ("gemini-4-argon*", ("sonnet", "opus", "opus"), "assumed Opus class: Gemini 4 flagship"),
+    ("gemini-4-carbon*", ("haiku", "sonnet", "opus"), "assumed Sonnet class: Gemini 4 mid tier"),
+    ("gemini-4-hydrogen*", ("haiku", "haiku", "sonnet"), "assumed Haiku class: Gemini 4 small tier"),
     ("gemini-*-flash*", ("haiku", "haiku", "sonnet"), "assumed Haiku class: Flash tier"),
     ("*", ("sonnet", "opus", "fable"), "unrecognized: counted as Opus, like token_carbon"),
 ]

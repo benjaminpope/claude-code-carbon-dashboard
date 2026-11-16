@@ -35,8 +35,11 @@ import fcntl
 import json
 import math
 import os
+import pickle
 import re
+import shutil
 import sys
+import time
 from collections import defaultdict
 from datetime import date, datetime
 from pathlib import Path
@@ -174,54 +177,95 @@ def record_key(session, day, model, branch):
     return f"{session}|{day}|{model}|{branch}"
 
 
-def scan_transcripts(projects=PROJECTS):
+CACHE_VERSION = 1
+
+
+def parse_transcript(path):
+    """Final API calls in one transcript: ({id: fields}, cwds). Pure in the file."""
+    calls, cwds = {}, set()
+    with open(path, errors="replace") as fh:
+        for line in fh:
+            try:
+                rec = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(rec, dict) or rec.get("type") != "assistant":
+                continue
+            msg = rec.get("message") or {}
+            usage = msg.get("usage")
+            # Claude Code writes "<synthetic>" placeholder messages locally;
+            # they are not API calls.
+            if not usage or str(msg.get("model", "")).startswith("<"):
+                continue
+            if rec.get("cwd"):
+                cwds.add(rec["cwd"])
+            # Streaming writes one line per content block with the same
+            # id; the last one carries the final output count.
+            calls[msg.get("id") or rec.get("requestId")] = (
+                rec.get("sessionId"), rec.get("timestamp", "")[:10],
+                msg.get("model", "unknown"), rec.get("gitBranch") or "-",
+                rec.get("cwd", ""),
+                usage.get("input_tokens", 0) or 0,
+                usage.get("cache_creation_input_tokens", 0) or 0,
+                usage.get("cache_read_input_tokens", 0) or 0,
+                usage.get("output_tokens", 0) or 0)
+    return calls, cwds
+
+
+def scan_transcripts(projects=PROJECTS, cache_path=None):
     """Totals from the transcripts on disk, keyed by session|day|model|branch.
 
     The branch is the transcript's gitBranch at the time of each call ("-"
     outside a git repository), so a session that switches branch splits
     into one record per branch.
+
+    Parsing a transcript is the slow part, so each file's calls are cached in
+    cache_path keyed by relative path, size and mtime; only new or changed
+    files are re-read. Deduplication across files stays outside the cache.
     """
-    records, seen, cwds = {}, set(), defaultdict(set)
+    cache = {}
+    if cache_path is not None and Path(cache_path).exists():
+        try:
+            with open(cache_path, "rb") as fh:
+                loaded = pickle.load(fh)
+            if loaded.get("version") == CACHE_VERSION:
+                cache = loaded["files"]
+        except Exception:
+            cache = {}
+    fresh, records, seen, cwds = {}, {}, set(), defaultdict(set)
     for path in sorted(projects.rglob("*.jsonl")):
+        rel = str(path.relative_to(projects))
         project = path.relative_to(projects).parts[0]
-        calls = {}
-        with open(path, errors="replace") as fh:
-            for line in fh:
-                try:
-                    rec = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                if not isinstance(rec, dict) or rec.get("type") != "assistant":
-                    continue
-                msg = rec.get("message") or {}
-                usage = msg.get("usage")
-                # Claude Code writes "<synthetic>" placeholder messages locally;
-                # they are not API calls.
-                if not usage or str(msg.get("model", "")).startswith("<"):
-                    continue
-                if rec.get("cwd"):
-                    cwds[project].add(rec["cwd"])
-                # Streaming writes one line per content block with the same
-                # id; the last one carries the final output count.
-                calls[msg.get("id") or rec.get("requestId")] = (rec, msg, usage)
-        for mid, (rec, msg, usage) in calls.items():
+        st = path.stat()
+        sig = (st.st_size, st.st_mtime_ns)
+        hit = cache.get(rel)
+        if hit and hit[0] == sig:
+            calls, file_cwds = hit[1], hit[2]
+        else:
+            calls, file_cwds = parse_transcript(path)
+        fresh[rel] = (sig, calls, file_cwds)
+        cwds[project] |= file_cwds
+        for mid, (sess, day, model, branch, cwd, i, cw, cr, o) in calls.items():
             if mid in seen:
                 continue
             seen.add(mid)
-            session = rec.get("sessionId", path.stem)
-            day = rec.get("timestamp", "")[:10]
-            model = msg.get("model", "unknown")
-            branch = rec.get("gitBranch") or "-"
+            session = sess or path.stem
             r = records.setdefault(record_key(session, day, model, branch), {
                 "session": session, "day": day, "model": model, "branch": branch,
                 "project_dir": project, **{c: 0 for c in COUNTS},
             })
-            r["cwd"] = rec.get("cwd", "")
+            r["cwd"] = cwd
             r["calls"] += 1
-            r["input"] += usage.get("input_tokens", 0) or 0
-            r["cache_write"] += usage.get("cache_creation_input_tokens", 0) or 0
-            r["cache_read"] += usage.get("cache_read_input_tokens", 0) or 0
-            r["output"] += usage.get("output_tokens", 0) or 0
+            r["input"] += i
+            r["cache_write"] += cw
+            r["cache_read"] += cr
+            r["output"] += o
+    if cache_path is not None and fresh != cache:
+        tmp = Path(f"{cache_path}.{os.getpid()}.tmp")
+        with open(tmp, "wb") as fh:
+            pickle.dump({"version": CACHE_VERSION,
+                         "files": {k: (v[0], v[1], v[2]) for k, v in fresh.items()}}, fh)
+        tmp.replace(cache_path)
     for r in records.values():
         r["project"] = project_name(r["project_dir"], sorted(cwds[r["project_dir"]]))
     return records
@@ -290,7 +334,7 @@ def update_history(data_dir=DATA_DIR, projects=PROJECTS):
             if stored.get("version") != HISTORY_VERSION:
                 sys.exit(f"{path}: unknown history version {stored.get('version')}")
         history = stored["records"]
-        merge(history, scan_transcripts(projects))
+        merge(history, scan_transcripts(projects, data_dir / "scan_cache.pickle"))
         tmp = path.with_suffix(".tmp")
         # Keep any other top-level keys a newer version may have written.
         tmp.write_text(json.dumps(stored, indent=1))
@@ -378,6 +422,50 @@ def print_table(result, by=None, unknown=()):
               file=sys.stderr)
 
 
+DEBOUNCE_S = 5 * 60       # the Stop hook fires every turn; a dashboard this fresh is fine
+STALE_LOCK_S = 30 * 60    # a run never legitimately takes this long
+
+
+def pid_alive(pid):
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def acquire_run_lock(lock_dir):
+    """Take the single-instance lock (an atomic mkdir); False if a live run holds it."""
+    for _ in range(2):
+        try:
+            os.mkdir(lock_dir)
+            (Path(lock_dir) / "pid").write_text(str(os.getpid()))
+            return True
+        except FileExistsError:
+            try:
+                age = time.time() - os.stat(lock_dir).st_mtime
+                pid = int((Path(lock_dir) / "pid").read_text().strip() or 0)
+            except (OSError, ValueError):
+                pid, age = 0, 0
+                # pid file not written yet: give the owner a moment, then treat as stale
+                try:
+                    age = time.time() - os.stat(lock_dir).st_mtime
+                except OSError:
+                    continue
+                if age < 10:
+                    return False
+            if pid and pid_alive(pid) and age < STALE_LOCK_S:
+                return False
+            shutil.rmtree(lock_dir, ignore_errors=True)  # owner dead or lock stale
+    return False
+
+
+def release_run_lock(lock_dir):
+    shutil.rmtree(lock_dir, ignore_errors=True)
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--since", help="ISO date, e.g. 2026-09-01")
@@ -386,7 +474,25 @@ def main():
     ap.add_argument("--by", choices=["project", "session", "model", "family", "day", "branch"])
     ap.add_argument("--json", action="store_true")
     ap.add_argument("--html", metavar="PATH", help="write the dashboard to PATH")
+    ap.add_argument("--force", action="store_true",
+                    help="with --html: ignore the debounce and a running instance")
     args = ap.parse_args()
+    if args.html and not args.force:
+        out = Path(args.html)
+        if out.exists() and time.time() - out.stat().st_mtime < DEBOUNCE_S:
+            return
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        lock_dir = DATA_DIR / "run.lock.d"
+        if not acquire_run_lock(lock_dir):
+            return
+        try:
+            return run(args)
+        finally:
+            release_run_lock(lock_dir)
+    run(args)
+
+
+def run(args):
     records = select(update_history(), args.project, args.since, args.until)
     if args.html:
         write_html(records, args.html)
