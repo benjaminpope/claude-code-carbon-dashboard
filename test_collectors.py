@@ -340,15 +340,15 @@ class SlurmTest(unittest.TestCase):
 
     def test_gpu_job_energy_by_hand(self):
         # dpg_prof 17938486: 10 min 14 s on 4 EPYC 7543 cores at 33% and one
-        # A100 at 24.4%, 8 GB: 614/3600 h x (4 x 7.03125 x 0.33 + 400 x 0.244
-        # + 8 x 0.3725) W = 18.737 Wh, x PUE 1.67 = 31.29 Wh.
+        # A100 at 24.4%, 8 GB: 614/3600 h x (4 x 7.03125 x 0.33 + 500 x 0.244
+        # + 8 x 0.3725) W = 22.899 Wh, x PUE 1.67 = 38.24 Wh.
         job = {}
         cc.merge_records(job, carbon_slurm.report_records(JOB_REPORT, "/x/dpg_prof-17938486.out"))
         cc.merge_records(job, carbon_slurm.parse_sacct(SACCT))
         kwh, gpu = carbon_slurm.job_kwh(job["17938486"])
         self.assertTrue(gpu)
-        expected = 614 / 3600 * (4 * 225 / 32 * 0.33 + 400 * 0.244 + 8 * 0.3725) * 1.67 / 1000
-        self.assertAlmostEqual(expected, 0.03129, places=5)
+        expected = 614 / 3600 * (4 * 225 / 32 * 0.33 + 500 * 0.244 + 8 * 0.3725) * 1.67 / 1000
+        self.assertAlmostEqual(expected, 0.03824, places=5)
         self.assertEqual(kwh, [expected] * 3)
         item = next(i for i in carbon_slurm.cost(job, {}) if i["id"] == "17938486")
         self.assertAlmostEqual(item["kg"][1], expected * 0.74)
@@ -366,7 +366,7 @@ class SlurmTest(unittest.TestCase):
         jobs["9"] = dict(base, state="TIMEOUT")
         item = next(i for i in carbon_slurm.cost(jobs, {}) if i["id"] == "9")
         p = carbon_slurm.PARAMS
-        mid = (225 / 32 + 400 * 0.20) * 1.67 / 1000
+        mid = (225 / 32 + 500 * 0.20) * 1.67 / 1000
         self.assertAlmostEqual(item["kwh"][1], mid)
         # The default low (0.25) is above the peers' median, so low = mid.
         self.assertEqual(p["u_gpu_default"][0], 0.25)
@@ -377,7 +377,7 @@ class SlurmTest(unittest.TestCase):
         job = carbon_slurm.parse_sacct(SACCT)["17938486"]
         kwh, _ = carbon_slurm.job_kwh(job)
         u_cpu = 874.703 / (614 * 4)
-        lo = 614 / 3600 * (4 * 225 / 32 * u_cpu + 400 * 0.25 + 8 * 0.3725) * 1.67 / 1000
+        lo = 614 / 3600 * (4 * 225 / 32 * u_cpu + 500 * 0.25 + 8 * 0.3725) * 1.67 / 1000
         self.assertAlmostEqual(kwh[0], lo)
 
     def test_classification(self):
