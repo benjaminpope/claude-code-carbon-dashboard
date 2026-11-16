@@ -30,6 +30,7 @@ from urllib.parse import quote
 
 import carbon_common as cc
 import carbon_copilot
+import carbon_counts
 import carbon_gemini
 import carbon_gha
 import carbon_slurm
@@ -593,9 +594,35 @@ def methodology(s, cfg):
     ]
 
 
+def export_counts(args):
+    """Write the counts export for this machine (see carbon_counts)."""
+    scope = carbon_counts.load_scope(args.scope)
+    if scope is None:
+        cc.warn("no scope file; every record goes in one group called 'all'")
+    gemini = {}
+    try:
+        gemini = carbon_gemini.collect()["gemini"]
+    except Exception as e:  # Antigravity may not be installed
+        cc.warn(f"gemini: {e!r}")
+    doc = carbon_counts.export_counts(tc.update_history(), gemini, scope, args.aggregate_only)
+    carbon_counts.write_json(doc, args.export_counts)
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    ap.add_argument("--config", required=True, help="TOML or JSON config")
+    ap.add_argument("--config", help="TOML or JSON config (required except for the counts modes)")
+    ap.add_argument("--export-counts", metavar="OUT.json",
+                    help="write token counts per model and scope group for this machine "
+                         "(Claude Code history and Gemini), then stop")
+    ap.add_argument("--scope", metavar="PATH",
+                    help="scope TOML for --export-counts (default: $CLAUDE_CARBON_SCOPE, "
+                         "else ~/.config/claude-carbon/scope.toml)")
+    ap.add_argument("--aggregate-only", action="store_true",
+                    help="--export-counts without per-session rows (cannot be merged)")
+    ap.add_argument("--merge-counts", metavar="EXPORT.json", nargs="+",
+                    help="merge exports from several machines (one is fine), "
+                         "deduplicated by session; write to --out")
+    ap.add_argument("--out", metavar="OUT.json", help="output of --merge-counts")
     ap.add_argument("--ledger", help="ledger path (default: the config's, else "
                                      "~/.claude/carbon/ledger-<repo>.json)")
     ap.add_argument("--offline", action="store_true", help="cost the ledger without fetching")
@@ -608,6 +635,17 @@ def main(argv=None):
                     help="compact expired records into this archive (max-merged) and "
                          "report the archive plus live records")
     args = ap.parse_args(argv)
+    if args.merge_counts:
+        if not args.out:
+            ap.error("--merge-counts needs --out")
+        carbon_counts.write_json(carbon_counts.merge_exports(
+            [json.loads(Path(p).read_text()) for p in args.merge_counts]), args.out)
+        return
+    if args.export_counts:
+        export_counts(args)
+        return
+    if not args.config:
+        ap.error("--config is required")
     cfg = load_config(args.config)
     ledger_path = Path(args.ledger or cfg.get("ledger") or
                        tc.DATA_DIR / f"ledger-{cfg['repo'].split('/')[1]}.json").expanduser()

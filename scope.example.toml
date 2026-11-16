@@ -1,0 +1,15 @@
+# Example scope for `carbon_report.py --export-counts`. Copy to
+# ~/.config/claude-carbon/scope.toml (or point $CLAUDE_CARBON_SCOPE or --scope
+# at it) and replace the placeholder names. The real file stays local and
+# uncommitted, so private repository names never enter this repository.
+
+# Directory names your repositories live under, e.g. ~/code/<repo>.
+roots = ["code"]
+
+# Group name -> repository names. Include renamed repositories under both
+# names. Claude Code worktrees of a repository count with it.
+[groups]
+core = ["example-project", "example-project-old-name", "example-project-extra"]
+validation = ["example-project-validation"]
+paper = ["example-paper"]
+tooling = ["example-tooling-a", "example-tooling-b"]
