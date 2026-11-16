@@ -446,6 +446,108 @@ class GHATest(unittest.TestCase):
         self.assertIsNone(carbon_gha.pr_number({"head_branch": "main"}))
 
 
+def review_log(result_body, model="claude-opus-5-5"):
+    """A claude-code-action job log: timestamped lines around the result object."""
+    ts = "2026-11-16T20:51:23.9228828Z "
+    init = json.dumps({"type": "system", "subtype": "init", "message": "Claude Code initialized",
+                       "model": model}, indent=2)
+    result = json.dumps(dict({"type": "result", "subtype": "success", "num_turns": 17},
+                             **result_body), indent=2)
+    lines = ["review\tUNKNOWN STEP\t﻿" + ts + "setup"]
+    lines += ["review\tUNKNOWN STEP\t" + ts + ln for ln in (init + "\n" + result).splitlines()]
+    return "\n".join(lines + ["review\tUNKNOWN STEP\t" + ts + "done"])
+
+
+class ClaudeReviewTest(unittest.TestCase):
+    COST = {"total_cost_usd": 0.5,
+            "modelUsage": {"claude-haiku-5-5": {"contextWindow": 1000000},
+                           "claude-opus-5-5": {"contextWindow": 1000000}}}
+    RUN = {"workflow": "claude review", "day": "2026-11-16", "head_branch": "b", "head_sha": "s",
+           "pr": 7, "jobs": 2, "runner_s": {"ubuntu": 100}}
+
+    def setUp(self):
+        self.addCleanup(setattr, cc, "EMBODIED", cc.EMBODIED)
+
+    def test_parses_cost_turns_and_model_from_a_log(self):
+        rec = carbon_gha.parse_review_log(review_log(self.COST))
+        self.assertAlmostEqual(rec["llm_cost_usd"], 0.5)
+        self.assertEqual(rec["llm_turns"], 17)
+        self.assertEqual(rec["llm_model"], "claude-opus-5-5")
+        self.assertEqual(rec["llm_models"], ["claude-haiku-5-5", "claude-opus-5-5"])
+        self.assertEqual(rec["llm_usage"], {})      # no token counts in the log
+        self.assertIsNone(carbon_gha.parse_review_log("no result here\n"))
+
+    def test_estimate_dollars_round_trip_at_list_prices(self):
+        rec = carbon_gha.parse_review_log(review_log(self.COST))
+        item = carbon_gha.review_item("r#1", dict(self.RUN, **rec))
+        self.assertEqual(item["method"], "estimated")
+        self.assertEqual(item["label"], "Claude review (LLM, estimated)")
+        t = carbon_gha.estimate_tokens(0.5, "claude-opus-5-5")
+        price = carbon_gha.PRICES["opus"]
+        self.assertAlmostEqual(sum(t[k] * p / 1e6 for k, p in zip(tc.TYPES, price)), 0.5)
+        # Central mix, by hand: 29.34% of the dollars buy cache writes at $5 per Mtok.
+        self.assertAlmostEqual(t["cache_write"], 0.5 * 0.2934 / 5 * 1e6)
+        mid_wh = sum(t[k] / 1e6 * tc.wh_per_mtok("opus", k) for k in tc.TYPES)
+        self.assertAlmostEqual(item["kwh"][1], mid_wh * tc.provider_pue() / 1000)
+        # Cache-heavy is the low end and output-heavy the high end.
+        self.assertLess(item["kg"][0], item["kg"][1])
+        self.assertLess(item["kg"][1], item["kg"][2])
+        self.assertEqual(item["cost_usd"], 0.5)
+
+    def test_real_usage_takes_priority_over_the_estimate(self):
+        usage = {"claude-opus-5-5": {"inputTokens": 1000, "outputTokens": 2000,
+                                     "cacheReadInputTokens": 100_000,
+                                     "cacheCreationInputTokens": 10_000}}
+        rec = carbon_gha.parse_review_log(review_log(dict(self.COST, modelUsage=usage)))
+        self.assertEqual(rec["llm_usage"]["claude-opus-5-5"],
+                         {"input": 1000, "cache_write": 10_000, "cache_read": 100_000, "output": 2000})
+        item = carbon_gha.review_item("r#1", dict(self.RUN, **rec))
+        self.assertEqual(item["method"], "measured")
+        self.assertEqual(item["tokens"]["output"], 2000)
+        want = cc.llm_cost("opus", {"input": 1000, "cache_write": 10_000, "cache_read": 100_000,
+                                    "output": 2000})
+        self.assertAlmostEqual(item["kwh"][1], want[0])
+        self.assertLess(item["kwh"][0], item["kwh"][2])    # cache-read range only
+
+    def test_top_level_usage_is_read_when_model_usage_is_empty(self):
+        body = dict(self.COST, usage={"input_tokens": 5, "output_tokens": 9,
+                                      "cache_read_input_tokens": 50, "cache_creation_input_tokens": 7})
+        rec = carbon_gha.parse_review_log(review_log(body))
+        self.assertEqual(rec["llm_usage"]["claude-opus-5-5"]["output"], 9)
+
+    def test_operational_only_drops_embodied(self):
+        run = dict(self.RUN, llm_cost_usd=1.0, llm_model="claude-opus-5-5")
+        full = carbon_gha.review_item("r#1", run)
+        cc.EMBODIED = False
+        op = carbon_gha.review_item("r#1", run)
+        self.assertAlmostEqual(op["kg"][1] / full["kg"][1], 1.14 * 0.287 / (1.14 * 0.287 + 0.049))
+        self.assertEqual(op["kwh"], full["kwh"])
+
+    def test_cost_adds_the_llm_item_beside_runner_time(self):
+        items = carbon_gha.cost({"r#1": dict(self.RUN, llm_cost_usd=0.5),
+                                 "r#2": dict(self.RUN)})
+        self.assertEqual([i["id"] for i in items], ["r#1", "r#1#llm", "r#2"])
+        self.assertEqual(items[0]["kind"], "CI")
+        self.assertEqual(items[1]["kind"], "model calls")
+
+    def test_mix_from_history_pools_deciles(self):
+        recs = [{"model": "claude-opus-5-5", "input": 0, "cache_write": 0,
+                 "cache_read": 1_000_000_000 * (1 + n % 2), "output": 1_000_000 * n % 7 * 3_000}
+                for n in range(40)]
+        mix = carbon_gha.mix_from_history(recs, "opus")
+        for which in ("low", "mid", "high"):
+            self.assertAlmostEqual(sum(mix[which]), 1.0, places=3)
+        self.assertLess(mix["low"][3], mix["high"][3])      # output share
+        self.assertIsNone(carbon_gha.mix_from_history(recs, "haiku"))
+
+    def test_archive_rows_keep_cost_and_method(self):
+        item = carbon_gha.review_item("r#1", dict(self.RUN, llm_cost_usd=0.5, llm_model="claude-opus-5-5"))
+        row = next(iter(carbon_report.compact([dict(item, feature="#7")]).values()))
+        self.assertEqual((row["method"], row["model"], row["cost_usd"]),
+                         ("estimated", "claude-opus-5-5", 0.5))
+        self.assertGreater(row["tokens"]["cache_read"], 0)
+
+
 class CopilotTest(unittest.TestCase):
     def sources(self):
         return {
