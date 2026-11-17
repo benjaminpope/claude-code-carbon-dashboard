@@ -251,7 +251,9 @@ def job_summary(slug, run_id):
 
 def review_record(slug, job_id):
     """parse_review_log of a job's log, or None if the log is gone or has no result."""
-    text = cc.run(["gh", "api", f"repos/{slug}/actions/jobs/{job_id}/logs"], timeout=300)
+    # Job logs hold ANSI colour codes, which gh refuses to print without the flag.
+    text = cc.run(["gh", "api", "--allow-escape-sequences", f"repos/{slug}/actions/jobs/{job_id}/logs"],
+                  timeout=300)
     return parse_review_log(text) if text else None
 
 
