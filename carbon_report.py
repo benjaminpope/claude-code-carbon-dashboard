@@ -327,7 +327,8 @@ def compact(items):
     rows = {}
     for i in items:
         feature = archive_feature(i)
-        key = "|".join((i["day"], i["source"], i["label"], i["kind"], i["class"], feature))
+        key = "|".join((i["day"], i["source"], i["label"], i["kind"], i["class"], feature,
+                        i.get("model", "")))
         r = rows.setdefault(key, {
             "day": i["day"], "source": i["source"], "label": i["label"], "kind": i["kind"],
             "class": i["class"], "feature": feature, "pr": i.get("pr"),
@@ -335,6 +336,12 @@ def compact(items):
             "kg_by_type": {}, "kwh": [0.0] * 3, "kg": [0.0] * 3})
         r["n"] += 1
         r["calls"] += i.get("calls", 0)
+        # Claude review rows keep the USD cost and method, so an estimate can be
+        # recomputed from the archive after the logs have expired.
+        if i.get("method"):
+            r["method"] = i["method"]
+            r["model"] = i.get("model", "")
+            r["cost_usd"] = r.get("cost_usd", 0.0) + i.get("cost_usd", 0.0)
         r["kwh"] = add(r["kwh"], i["kwh"])
         r["kg"] = add(r["kg"], i["kg"])
         for f in ("tokens", "kg_by_type"):
@@ -570,7 +577,10 @@ def methodology(s, cfg):
              "by this repository's share of local use or agent PRs"],
             ["GitHub Actions CI", "Runner time per job", "Green Algorithms",
              f"4 vCPU at {carbon_gha.RUNNERS['ubuntu']['p_core_w']:.2f} W each, 16 GB, usage "
-             f"{gh['u_cpu'][0]}–{gh['u_cpu'][2]}, PUE {gh['pue']}, {gh['grid_kg_per_kwh']} kg/kWh"],
+             f"{gh['u_cpu'][0]}–{gh['u_cpu'][2]}, PUE {gh['pue']}, {gh['grid_kg_per_kwh']} kg/kWh. "
+             "Claude PR reviews also count their LLM tokens, estimated from the log's USD cost "
+             "at list prices and the local cost mix (range: cache-heavy to output-heavy) "
+             "unless the log holds real counts"],
             ["OzSTAR/NT Slurm jobs", "sacct allocation and run time; NT Job Report usage",
              "Green Algorithms",
              f"EPYC 7543 at {sl['p_core_w']:.2f} W per core, A100 at {sl['p_gpu_w']:.0f} W, measured "

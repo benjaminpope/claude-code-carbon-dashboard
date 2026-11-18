@@ -165,7 +165,7 @@ module:
 | `carbon_vscode.py` | VS Code Copilot Chat | prompt and output tokens per request, from chat session logs | TokenClimate rows, else an assumed model class |
 | `carbon_gemini.py` | Gemini in Google Antigravity (app and CLI) | input, cached-read and output tokens per model call, from local conversation databases | TokenClimate rows, else an assumed model class |
 | `carbon_copilot.py` | Copilot cloud agent and code review | run time of their Actions runs; billed AI Credits and premium requests | TokenClimate Sonnet factors |
-| `carbon_gha.py` | GitHub Actions CI | runner time per job | Green Algorithms |
+| `carbon_gha.py` | GitHub Actions CI, and the LLM tokens of automatic Claude PR reviews | runner time per job; each review's `total_cost_usd` (real token counts if a log ever holds them) | Green Algorithms; TokenClimate for review tokens |
 | `carbon_slurm.py` | Slurm jobs (OzSTAR/NT) | sacct allocation and run time; NT Job Report usage; `submissions.tsv` | Green Algorithms |
 
 Every estimate has a low, mid and high value, and the parameters of each
@@ -302,6 +302,33 @@ PR a Copilot run served, and labelled with the PR title. Work on `main` is
 - *GitHub Actions.* The sum of job durations of each finished run, on a
   4-vCPU, 16 GB runner, at an assumed PUE and the US average grid. A run
   with no jobs (cancelled or failed before a runner started) counts zero.
+- *Claude PR reviews on Actions (an estimate).* The `claude review` workflow
+  (claude-code-action) prints Claude Code's result object in the job log. Its
+  `modelUsage` names the models but carries no token counts; it gives
+  `total_cost_usd` and `num_turns`. If a log ever holds real counts (`usage` or
+  `modelUsage` token fields) they are used, labelled `measured`. Otherwise the
+  review is labelled `estimated`: its dollars are split over input, cache-write,
+  cache-read and output tokens by the cost mix measured on this dashboard's own
+  local Claude Code history for the same model family (`MIX` in
+  `carbon_gha.py`, derived by `mix_from_history`), and each share is divided by
+  Anthropic's list price for that token type (Opus 5.5: $4 input, $5 cache
+  write, $0.20 cache read, $20 output per million tokens). The tokens then go
+  through the same TokenClimate factors as Claude Code, so `--operational-only`
+  drops embodied carbon here too. Mid uses the mix over all sessions of at
+  least $1 (Opus: 0.1% input, 29% cache write, 54% cache read, 17% output of
+  the dollars; tokens are summed per session first). Low and high use the pooled sessions in the bottom and top decile of server
+  Wh per dollar: the most cache-heavy mix (37% cache write, 51% cache read, 12% output) and the
+  most output-heavy mix (36% output). The range also spans the cache-read
+  energy factor (0.05, 0.08 and 0.20 of the input factor), as for measured
+  usage; it does not cover other uncertainty in the factors. Caveats: the cost includes any Haiku calls the
+  CLI made (which the model split cannot separate), all of it is costed as the
+  workflow's model, and local interactive sessions may differ from CI reviews.
+  Ledger records keep `llm_cost_usd`, `llm_turns`, `llm_model`, `llm_models`
+  and `llm_usage`, and archive rows (one per model) keep `cost_usd`, `model` and `method`, so
+  the estimate can be recomputed by hand after GitHub deletes the logs; archived
+  `kg` is stored as computed, as for every other source. A run's review jobs
+  are summed over all attempts, and a review that hit its turn limit counts if
+  it printed a result.
 - *Slurm.* Green Algorithms with the allocation from sacct and measured CPU
   and GPU usage from the NT Job Report, NT's EPYC 7543 and A100 power, and
   Victoria's grid factor from the National Greenhouse Accounts Factors 2026.
