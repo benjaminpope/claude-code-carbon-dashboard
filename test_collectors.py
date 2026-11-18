@@ -485,8 +485,8 @@ class ClaudeReviewTest(unittest.TestCase):
         t = carbon_gha.estimate_tokens(0.5, "claude-opus-5-5")
         price = carbon_gha.PRICES["opus"]
         self.assertAlmostEqual(sum(t[k] * p / 1e6 for k, p in zip(tc.TYPES, price)), 0.5)
-        # Central mix, by hand: 29.34% of the dollars buy cache writes at $5 per Mtok.
-        self.assertAlmostEqual(t["cache_write"], 0.5 * 0.2934 / 5 * 1e6)
+        # Central mix, by hand: 29.39% of the dollars buy cache writes at $5 per Mtok.
+        self.assertAlmostEqual(t["cache_write"], 0.5 * 0.2939 / 5 * 1e6)
         mid_wh = sum(t[k] / 1e6 * tc.wh_per_mtok("opus", k) for k in tc.TYPES)
         self.assertAlmostEqual(item["kwh"][1], mid_wh * tc.provider_pue() / 1000)
         # Cache-heavy is the low end and output-heavy the high end.
