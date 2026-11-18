@@ -316,15 +316,19 @@ PR a Copilot run served, and labelled with the PR title. Work on `main` is
   through the same TokenClimate factors as Claude Code, so `--operational-only`
   drops embodied carbon here too. Mid uses the mix over all sessions of at
   least $1 (Opus: 0.1% input, 29% cache write, 54% cache read, 17% output of
-  the dollars). Low and high use the pooled sessions in the bottom and top decile of server
-  Wh per dollar: the most cache-heavy mix (65% cache write, 6% output) and the
-  most output-heavy mix (34% output). The range covers the token mix only, not
-  uncertainty in the factors. Caveats: the cost includes any Haiku calls the
+  the dollars; tokens are summed per session first). Low and high use the pooled sessions in the bottom and top decile of server
+  Wh per dollar: the most cache-heavy mix (37% cache write, 51% cache read, 12% output) and the
+  most output-heavy mix (36% output). The range also spans the cache-read
+  energy factor (0.05, 0.08 and 0.20 of the input factor), as for measured
+  usage; it does not cover other uncertainty in the factors. Caveats: the cost includes any Haiku calls the
   CLI made (which the model split cannot separate), all of it is costed as the
   workflow's model, and local interactive sessions may differ from CI reviews.
   Ledger records keep `llm_cost_usd`, `llm_turns`, `llm_model`, `llm_models`
-  and `llm_usage`, and archive rows keep `cost_usd`, `model` and `method`, so
-  the estimate can be recomputed after GitHub deletes the logs.
+  and `llm_usage`, and archive rows (one per model) keep `cost_usd`, `model` and `method`, so
+  the estimate can be recomputed by hand after GitHub deletes the logs; archived
+  `kg` is stored as computed, as for every other source. A run's review jobs
+  are summed over all attempts, and a review that hit its turn limit counts if
+  it printed a result.
 - *Slurm.* Green Algorithms with the allocation from sacct and measured CPU
   and GPU usage from the NT Job Report, NT's EPYC 7543 and A100 power, and
   Victoria's grid factor from the National Greenhouse Accounts Factors 2026.

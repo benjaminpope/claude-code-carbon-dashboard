@@ -493,21 +493,61 @@ class ClaudeReviewTest(unittest.TestCase):
         self.assertLess(item["kg"][0], item["kg"][1])
         self.assertLess(item["kg"][1], item["kg"][2])
         self.assertEqual(item["cost_usd"], 0.5)
+        # The upper bound is no tighter than for the same tokens measured: the
+        # cache-read energy factor spans its range for an estimate too.
+        mid = carbon_gha.estimate_tokens(0.5, "claude-opus-5-5")
+        measured = carbon_gha.review_item("r#1", dict(self.RUN, llm_cost_usd=0.5, llm_usage={
+            "claude-opus-5-5": {k: round(v) for k, v in mid.items()}}))
+        self.assertAlmostEqual(item["kg"][1], measured["kg"][1], places=4)
+        self.assertGreaterEqual(item["kg"][2], measured["kg"][2] * 0.99)
+
+    def test_log_parsing_ignores_model_strings_in_the_diff_and_ansi(self):
+        # init without a model, then reviewed code that mentions another model
+        ts = "2026-11-16T20:51:23.9228828Z "
+        init = json.dumps({"type": "system", "subtype": "init"}, indent=2)
+        other = 'x = {\n  "model": "claude-haiku-4-5"\n}'
+        result = json.dumps({"type": "result", "total_cost_usd": 1.0}, indent=2)
+        text = "\n".join(ts + "\x1b[36;1m" + ln + "\x1b[0m"
+                         for ln in (init + "\n" + other + "\n" + result).splitlines())
+        rec = carbon_gha.parse_review_log(text)
+        self.assertEqual(rec["llm_model"], "")
+        self.assertEqual(rec["llm_cost_usd"], 1.0)
+
+    def test_review_record_sums_attempts_and_flags_failed_fetches(self):
+        logs = {"1": review_log(dict(self.COST, total_cost_usd=1.0)),
+                "2": review_log(dict(self.COST, total_cost_usd=2.0)), "3": None}
+        real = cc.run
+        self.addCleanup(setattr, cc, "run", real)
+        cc.run = lambda cmd, **kw: logs[cmd[-1].split("/")[-2]]
+        rec, definitive = carbon_gha.review_record("me/x", ["1", "2"])
+        self.assertAlmostEqual(rec["llm_cost_usd"], 3.0)
+        self.assertEqual(rec["llm_turns"], 34)
+        self.assertTrue(definitive)
+        self.assertEqual(carbon_gha.review_record("me/x", ["3"]), (None, False))
 
     def test_real_usage_takes_priority_over_the_estimate(self):
         usage = {"claude-opus-5-5": {"inputTokens": 1000, "outputTokens": 2000,
                                      "cacheReadInputTokens": 100_000,
-                                     "cacheCreationInputTokens": 10_000}}
+                                     "cacheCreationInputTokens": 10_000},
+                 "claude-haiku-5-5": {"inputTokens": 500, "outputTokens": 800,
+                                      "cacheReadInputTokens": 40_000,
+                                      "cacheCreationInputTokens": 2_000}}
         rec = carbon_gha.parse_review_log(review_log(dict(self.COST, modelUsage=usage)))
         self.assertEqual(rec["llm_usage"]["claude-opus-5-5"],
                          {"input": 1000, "cache_write": 10_000, "cache_read": 100_000, "output": 2000})
         item = carbon_gha.review_item("r#1", dict(self.RUN, **rec))
         self.assertEqual(item["method"], "measured")
-        self.assertEqual(item["tokens"]["output"], 2000)
-        want = cc.llm_cost("opus", {"input": 1000, "cache_write": 10_000, "cache_read": 100_000,
-                                    "output": 2000})
-        self.assertAlmostEqual(item["kwh"][1], want[0])
-        self.assertLess(item["kwh"][0], item["kwh"][2])    # cache-read range only
+        self.assertEqual(item["tokens"]["output"], 2800)
+        # each model's tokens at its own family's factors, not all at the first key's
+        opus = {"input": 1000, "cache_write": 10_000, "cache_read": 100_000, "output": 2000}
+        haiku = {"input": 500, "cache_write": 2_000, "cache_read": 40_000, "output": 800}
+        want = [cc.llm_cost("opus", opus, cache_read_scale=s)[0]
+                + cc.llm_cost("haiku", haiku, cache_read_scale=s)[0]
+                for s in carbon_gha.CACHE_READ_RANGE]
+        for got, w in zip(item["kwh"], want):
+            self.assertAlmostEqual(got, w)
+        self.assertAlmostEqual(sum(item["kg_by_type"].values()),
+                               cc.llm_cost("opus", opus)[1] + cc.llm_cost("haiku", haiku)[1])
 
     def test_top_level_usage_is_read_when_model_usage_is_empty(self):
         body = dict(self.COST, usage={"input_tokens": 5, "output_tokens": 9,
@@ -531,7 +571,7 @@ class ClaudeReviewTest(unittest.TestCase):
         self.assertEqual(items[1]["kind"], "model calls")
 
     def test_mix_from_history_pools_deciles(self):
-        recs = [{"model": "claude-opus-5-5", "input": 0, "cache_write": 0,
+        recs = [{"session": str(n), "model": "claude-opus-5-5", "input": 0, "cache_write": 0,
                  "cache_read": 1_000_000_000 * (1 + n % 2), "output": 1_000_000 * n % 7 * 3_000}
                 for n in range(40)]
         mix = carbon_gha.mix_from_history(recs, "opus")
@@ -539,6 +579,12 @@ class ClaudeReviewTest(unittest.TestCase):
             self.assertAlmostEqual(sum(mix[which]), 1.0, places=3)
         self.assertLess(mix["low"][3], mix["high"][3])      # output share
         self.assertIsNone(carbon_gha.mix_from_history(recs, "haiku"))
+        # Branch/day slices of one session are summed before the cost floor applies.
+        part = {"session": "s", "model": "claude-opus-5-5", "input": 0, "cache_write": 0,
+                "cache_read": 100_000_000, "output": 0}      # $20 of cache reads
+        self.assertIsNone(carbon_gha.mix_from_history([dict(part, cache_read=1_000_000)], "opus"))
+        self.assertIsNotNone(carbon_gha.mix_from_history(
+            [dict(part, cache_read=3_000_000), dict(part, cache_read=3_000_000, day="d2")], "opus"))
 
     def test_archive_rows_keep_cost_and_method(self):
         item = carbon_gha.review_item("r#1", dict(self.RUN, llm_cost_usd=0.5, llm_model="claude-opus-5-5"))
@@ -546,6 +592,11 @@ class ClaudeReviewTest(unittest.TestCase):
         self.assertEqual((row["method"], row["model"], row["cost_usd"]),
                          ("estimated", "claude-opus-5-5", 0.5))
         self.assertGreater(row["tokens"]["cache_read"], 0)
+        # Reviews on different models are separate rows, so cost and model stay paired.
+        haiku = carbon_gha.review_item("r#2", dict(self.RUN, llm_cost_usd=0.5, llm_model="claude-haiku-5-5"))
+        rows = carbon_report.compact([dict(item, feature="#7"), dict(haiku, feature="#7")])
+        self.assertEqual(sorted((r["model"], r["cost_usd"]) for r in rows.values()),
+                         [("claude-haiku-5-5", 0.5), ("claude-opus-5-5", 0.5)])
 
 
 class CopilotTest(unittest.TestCase):

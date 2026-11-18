@@ -18,7 +18,7 @@ parameters below.
 import json
 import re
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime
+from datetime import date, datetime, timedelta
 
 import carbon_common as cc
 import token_carbon as tc
@@ -72,14 +72,16 @@ PRICES = {
 # tokens, from the local ledger (mix_from_history). low and high are the pooled
 # sessions in the bottom and top decile of server Wh per USD (the most
 # cache-heavy and the most output-heavy mixes); mid pools every session.
-# 552 Opus and 539 Sonnet sessions of at least USD 1, valued at the prices
+# 164 Opus and 400 Sonnet sessions (tokens summed per session over days, branches
+# and models of the family) of at least USD 1, valued at the prices
 # above. Haiku has too few sessions and uses the Opus mix.
 MIX = {
-    "opus": {"low": (0.0043, 0.6519, 0.2871, 0.0567), "mid": (0.0007, 0.2934, 0.5384, 0.1675),
-             "high": (0.0001, 0.2499, 0.4087, 0.3413)},
-    "sonnet": {"low": (0.0011, 0.7275, 0.2495, 0.0219), "mid": (0.0006, 0.3684, 0.4382, 0.1928),
-               "high": (0.0001, 0.2282, 0.4289, 0.3427)},
+    "opus": {"low": (0.0006, 0.3703, 0.5113, 0.1179), "mid": (0.0007, 0.2939, 0.5377, 0.1677),
+             "high": (0.0001, 0.2458, 0.3956, 0.3584)},
+    "sonnet": {"low": (0.0001, 0.5907, 0.3579, 0.0513), "mid": (0.0006, 0.3759, 0.4349, 0.1886),
+               "high": (0.0001, 0.2258, 0.4446, 0.3295)},
 }
+LOG_RETENTION_DAYS = 90   # GitHub keeps Actions logs for 90 days by default
 CACHE_READ_RANGE = (0.05, tc.CACHE_READ_SCALE, 0.20)
 LLM_LABEL = "Claude review (LLM, {})"
 
@@ -92,10 +94,17 @@ def mix_from_history(records, family, min_usd=1.0, decile=0.1):
     server Wh per USD. Returns None if no session qualifies. This is how MIX
     was derived.
     """
-    rows = []
+    # History records are per session, day, model and branch; a review is one cold
+    # session, so tokens are summed per session first.
+    sessions = {}
     for r in records:
         if r["model"].startswith("<") or tc.model_family(r["model"]) != family:
             continue
+        tot = sessions.setdefault(r.get("session", id(r)), dict.fromkeys(tc.TYPES, 0))
+        for t in tc.TYPES:
+            tot[t] += r.get(t, 0)
+    rows = []
+    for r in sessions.values():
         usd = [r.get(t, 0) * p / 1e6 for t, p in zip(tc.TYPES, PRICES[family])]
         if sum(usd) >= min_usd:
             wh = sum(r.get(t, 0) / 1e6 * tc.wh_per_mtok(family, t) for t in tc.TYPES)
@@ -118,21 +127,23 @@ def parse_review_log(text):
     llm_usage is {model: {input, cache_write, cache_read, output}} when the log
     holds real token counts, else {}.
     """
-    lines = []
-    for line in text.splitlines():
-        # job logs carry an ISO timestamp (and, from `run view`, job and step names)
-        m = re.search(r"\d{4}-\d\d-\d\dT[\d:.]+Z ?", line)
-        lines.append(line[m.end():] if m else line)
-    body = "\n".join(lines)
-    result = None
-    for m in re.finditer(r'^\{\n  "type": "result"', body, re.M):
+    # job logs carry an ISO timestamp at the start of each line (after job and step
+    # names, from `run view`), and ANSI colour codes
+    body = "\n".join(re.sub(r"^(?:[^\t]*\t){0,2}\ufeff?\s*\d{4}-\d\d-\d\dT[\d:.]+Z ?", "", line)
+                     for line in re.sub(r"\x1b\[[0-9;]*[A-Za-z]", "", text).splitlines())
+    decode = json.JSONDecoder().raw_decode
+    result = init = None
+    for m in re.finditer(r'^\{\n  "type": "(result|system)"', body, re.M):
         try:
-            result = json.JSONDecoder().raw_decode(body[m.start():])[0]
+            obj = decode(body[m.start():])[0]
         except ValueError:
             continue
+        if m.group(1) == "result":
+            result = obj
+        elif obj.get("subtype") == "init" and obj.get("model") and init is None:
+            init = obj["model"]
     if not result or result.get("total_cost_usd") is None:
         return None
-    init = re.search(r'"subtype": "init",\n(?:.*\n)*?\s*"model": "([^"]+)"', body)
     usage = {}
     for model, u in (result.get("modelUsage") or {}).items():
         counts = {"input": u.get("inputTokens", 0), "cache_write": u.get("cacheCreationInputTokens", 0),
@@ -142,11 +153,11 @@ def parse_review_log(text):
     if not usage and any((result.get("usage") or {}).get(k) for k in
                          ("input_tokens", "output_tokens", "cache_read_input_tokens")):
         u = result["usage"]
-        usage[init.group(1) if init else DEFAULT_REVIEW_MODEL] = {
+        usage[init or DEFAULT_REVIEW_MODEL] = {
             "input": u.get("input_tokens", 0), "cache_write": u.get("cache_creation_input_tokens", 0),
             "cache_read": u.get("cache_read_input_tokens", 0), "output": u.get("output_tokens", 0)}
     return {"llm_cost_usd": float(result["total_cost_usd"]), "llm_turns": result.get("num_turns", 0),
-            "llm_model": init.group(1) if init else "", "llm_models": sorted(result.get("modelUsage") or {}),
+            "llm_model": init or "", "llm_models": sorted(result.get("modelUsage") or {}),
             "llm_usage": usage}
 
 
@@ -167,19 +178,20 @@ def review_item(key, r, embodied=None):
     kwh, kg = [], []
     if usage:
         method = "measured"
-        family = tc.model_family(next(iter(usage)))
-        tokens = {t: sum(c.get(t, 0) for c in usage.values()) for t in tc.TYPES}
+        parts = [(tc.model_family(m), c) for m, c in usage.items()]
+        tokens = {t: sum(c.get(t, 0) for _, c in parts) for t in tc.TYPES}
         for scale in CACHE_READ_RANGE:
-            e = cc.llm_cost(family, tokens, cache_read_scale=scale, embodied=embodied)
-            kwh.append(e[0])
-            kg.append(e[1])
+            e = [cc.llm_cost(f, c, cache_read_scale=scale, embodied=embodied) for f, c in parts]
+            kwh.append(sum(x[0] for x in e))
+            kg.append(sum(x[1] for x in e))
     else:
         method = "estimated"
-        family = tc.model_family(model)
-        tokens = estimate_tokens(r["llm_cost_usd"], model)
-        for which in ("low", "mid", "high"):
-            e = cc.llm_cost(family, estimate_tokens(r["llm_cost_usd"], model, which),
-                            embodied=embodied)
+        parts = [(tc.model_family(model), estimate_tokens(r["llm_cost_usd"], model))]
+        tokens = parts[0][1]
+        # token mix and cache-read energy factor each span low/mid/high, as for measured usage
+        for which, scale in zip(("low", "mid", "high"), CACHE_READ_RANGE):
+            e = cc.llm_cost(parts[0][0], estimate_tokens(r["llm_cost_usd"], model, which),
+                            cache_read_scale=scale, embodied=embodied)
             kwh.append(e[0])
             kg.append(e[1])
     return {
@@ -187,8 +199,8 @@ def review_item(key, r, embodied=None):
         "kind": "model calls", "branch": r["head_branch"], "pr": r.get("pr"), "sha": r.get("head_sha"),
         "class": "dev", "method": method, "model": model, "cost_usd": r["llm_cost_usd"],
         "tokens": {t: round(v) for t, v in tokens.items()}, "calls": r.get("llm_turns", 0),
-        "kg_by_type": {t: cc.llm_cost(family, {t: tokens[t]}, embodied=embodied)[1]
-                       for t in tc.TYPES},
+        "kg_by_type": {t: sum(cc.llm_cost(f, {t: c.get(t, 0)}, embodied=embodied)[1]
+                              for f, c in parts) for t in tc.TYPES},
         "kwh": kwh, "kg": kg,
     }
 
@@ -244,17 +256,41 @@ def job_summary(slug, run_id):
     for j in jobs:
         os_ = runner_os(j.get("labels") or [])
         by_os[os_] = by_os.get(os_, 0.0) + seconds(j.get("started_at"), j.get("completed_at"))
-    review = next((j["id"] for j in jobs if j.get("name") == REVIEW_JOB
-                   and j.get("conclusion") == "success"), 0)
-    return {"jobs": len(jobs), "runner_s": by_os, "review_job": review}
+    # every review job of every attempt, including a failed one (--max-turns) that
+    # still printed its result; skipped jobs ran nothing
+    reviews = [j["id"] for j in jobs if j.get("name") == REVIEW_JOB
+               and j.get("conclusion") not in ("skipped", None)]
+    return {"jobs": len(jobs), "runner_s": by_os, "review_jobs": reviews}
 
 
-def review_record(slug, job_id):
-    """parse_review_log of a job's log, or None if the log is gone or has no result."""
-    # Job logs hold ANSI colour codes, which gh refuses to print without the flag.
-    text = cc.run(["gh", "api", "--allow-escape-sequences", f"repos/{slug}/actions/jobs/{job_id}/logs"],
-                  timeout=300)
-    return parse_review_log(text) if text else None
+def review_record(slug, job_ids):
+    """parse_review_log summed over a run's review jobs, or None if none has a result.
+
+    Returns (record, definitive): definitive is False when a log could not be
+    fetched (a transient error or an expired log), so a later collect may retry.
+    """
+    parsed, definitive = [], True
+    for job_id in job_ids:
+        # Job logs hold ANSI colour codes, which gh refuses to print without the flag.
+        text = cc.run(["gh", "api", "--allow-escape-sequences",
+                       f"repos/{slug}/actions/jobs/{job_id}/logs"], timeout=300)
+        if text is None:
+            definitive = False
+        elif (rec := parse_review_log(text)):
+            parsed.append(rec)
+    if not parsed:
+        return None, definitive
+    usage = {}
+    for rec in parsed:
+        for m, c in rec["llm_usage"].items():
+            u = usage.setdefault(m, dict.fromkeys(tc.TYPES, 0))
+            for t in tc.TYPES:
+                u[t] += c.get(t, 0)
+    return {"llm_cost_usd": sum(r["llm_cost_usd"] for r in parsed),
+            "llm_turns": sum(r["llm_turns"] for r in parsed),
+            "llm_model": next((r["llm_model"] for r in parsed if r["llm_model"]), ""),
+            "llm_models": sorted({m for r in parsed for m in r["llm_models"]}),
+            "llm_usage": usage}, definitive
 
 
 def collect(slug, known=None, workers=8):
@@ -281,26 +317,36 @@ def collect(slug, known=None, workers=8):
             "pr": pr_number(run), "attempts": run.get("run_attempt") or 1,
             "wall_s": seconds(run.get("run_started_at"), run.get("updated_at")),
         }
-    # A Claude review run is also looked at once for its LLM result, so a ledger
-    # from before the llm_* fields is filled in while GitHub keeps the logs.
-    todo = [k for k in records if "runner_s" not in known.get(k, {})
-            or (CLAUDE_REVIEW_PATH.search(records[k]["path"])
-                and not known.get(k, {}).get("llm_checked"))]
+
+    def unread(k):
+        # A Claude review run is also looked at for its LLM result, so a ledger from
+        # before the llm_* fields is filled in while GitHub keeps the logs, and a
+        # re-run (more attempts) is read again.
+        old = known.get(k, {})
+        return (CLAUDE_REVIEW_PATH.search(records[k]["path"])
+                and (not old.get("llm_checked") or old.get("llm_attempts") != records[k]["attempts"]))
+    todo = [k for k in records if "runner_s" not in known.get(k, {}) or unread(k)]
     with ThreadPoolExecutor(workers) as pool:
         for key, summary in zip(todo, pool.map(lambda k: job_summary(slug, records[k]["run_id"]), todo)):
             if summary:
                 records[key].update(summary)
-    reviews = [k for k in todo if records[k].get("review_job")]
+    reviews = [k for k in todo if records[k].get("review_jobs")]
     with ThreadPoolExecutor(workers) as pool:
-        for key, rec in zip(reviews, pool.map(
-                lambda k: review_record(slug, records[k]["review_job"]), reviews)):
-            if rec:
-                records[key].update(rec)
+        results = dict(zip(reviews, pool.map(
+            lambda k: review_record(slug, records[k]["review_jobs"]), reviews)))
+    expired = (date.today() - timedelta(days=LOG_RETENTION_DAYS)).isoformat()
     for key in todo:
         r = records[key]
-        if CLAUDE_REVIEW_PATH.search(r["path"]) and "review_job" in r \
-                and (not r["review_job"] or "llm_cost_usd" in r):
-            r["llm_checked"] = True   # no successful review job, or its result read
+        if not CLAUDE_REVIEW_PATH.search(r["path"]) or "review_jobs" not in r:
+            continue
+        rec, definitive = results.get(key, (None, True))
+        if rec:
+            r.update(rec)
+        # no review job, a log without a result, or a log past GitHub's retention is
+        # final; a transient fetch error is retried on the next collect
+        if definitive or r["day"] < expired:
+            r["llm_checked"] = True
+            r["llm_attempts"] = r["attempts"]
     return records
 
 

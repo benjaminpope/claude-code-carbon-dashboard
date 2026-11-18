@@ -327,7 +327,8 @@ def compact(items):
     rows = {}
     for i in items:
         feature = archive_feature(i)
-        key = "|".join((i["day"], i["source"], i["label"], i["kind"], i["class"], feature))
+        key = "|".join((i["day"], i["source"], i["label"], i["kind"], i["class"], feature,
+                        i.get("model", "")))
         r = rows.setdefault(key, {
             "day": i["day"], "source": i["source"], "label": i["label"], "kind": i["kind"],
             "class": i["class"], "feature": feature, "pr": i.get("pr"),
